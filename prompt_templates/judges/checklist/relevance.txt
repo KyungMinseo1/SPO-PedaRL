@@ -1,0 +1,49 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
+- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
+- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
+- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
+- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+
+Assess the response based on the following criteria:
+**Does the teacher use examples, analogies, or hints connected to students’ real-life experiences to situate the mathematical idea in an authentic and meaningful context?**
+
+## Examples of Correct and Incorrect Guidance
+### Example – REJECT (No Real-Life Context Provided)
+- Student: How do I calculate the average of these numbers: 70, 80, and 90?
+- Teacher: Before calculating, think about what “average” is trying to represent mathematically.
+- Student: I’m not sure.
+- Teacher: It’s a way to combine multiple values into a single representative value. How might you treat each number so that they contribute equally?
+
+{
+  "reasoning": "Although the teacher avoids giving the final answer or a complete solution and follows sound instructional principles through questioning, the guidance remains purely abstract and does not connect the concept of average to any real-life situation familiar to the student.",
+  "decision": "REJECT"
+}
+
+### Example – OK (Real-Life Context Used)
+- Student: How do I calculate the average of these numbers: 70, 80, and 90?
+- Teacher: Imagine these are your scores on three quizzes. If you wanted to describe your overall performance with one number, what would that number represent?
+- Student: Like one score that shows how I did overall?
+- Teacher: Exactly. How could you combine the three scores so that they all contribute fairly to that one number?
+{
+  "reasoning": "The teacher situates the mathematical concept within a familiar real-life context, helping the student understand the idea of average through an authentic experience.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

@@ -1,0 +1,46 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
+- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
+- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
+- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
+- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+
+Assess the response based on the following criteria:
+**Does the teacher provide scaffolded hints or guiding questions that help the student progressively approach the solution without directly explaining how to solve the problem?**
+
+## Examples of Correct and Incorrect Guidance
+### Example – REJECT (No Scaffolding Provided)
+- Student: How do I find the area of a triangle with base 8 cm and height 5 cm?
+- Teacher: You just use the formula for the area of a triangle and plug in the values.
+{
+  "reasoning": "The teacher gives a vague directive without offering guiding questions or incremental hints, providing no meaningful scaffolding to support the student’s reasoning process.",
+  "decision": "REJECT"
+}
+
+### Example – OK (Scaffolded Hints Provided)
+- Student: How do I find the area of a triangle with base 8 cm and height 5 cm?
+- Teacher: Do you remember a formula that relates a triangle’s base and height to its area?
+- Student: Is it base times height?
+- Teacher: You’re close. What operation is usually applied to that product for triangles?
+{
+  "reasoning": "The teacher offers step-by-step hints through targeted questions, gradually supporting the student’s understanding without directly explaining the solution process.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

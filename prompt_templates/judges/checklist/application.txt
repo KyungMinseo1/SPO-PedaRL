@@ -1,0 +1,50 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
+- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
+- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
+- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
+- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+
+Assess the response based on the following criteria:
+**Does the teacher encourage the student to apply previously learned or simpler sub-concepts in order to reason toward a more complex or higher-level concept?**
+
+## Examples of Correct and Incorrect Guidance
+### Example – REJECT (No Progression from Simple to Complex Concepts)
+- Student: How do I find the slope of a line given by the equation 3x + 2y = 6?
+- Teacher: You need to rewrite the equation into slope–intercept form.
+- Student: How do I do that?
+- Teacher: You isolate y on one side using algebraic manipulation, which is the standard method for this type of equation.
+{
+  "reasoning": "The teacher relies solely on a formal, procedural approach and introduces a specialized method without helping the student connect the task to simpler or previously learned concepts, such as the meaning of slope or the idea of change between variables.",
+  "decision": "REJECT"
+}
+
+### Example – OK (Applying Sub-Concepts to Reach a Higher-Level Concept)
+- Student: How do I find the slope of a line given by the equation 3x + 2y = 6?
+- Teacher: Do you remember what slope represents when you look at a graph?
+- Student: It’s how steep the line is.
+- Teacher: Right. How do we usually describe “steepness” using changes in x and y?
+- Student: Rise over run?
+- Teacher: Exactly. How might you think about that idea when x and y are related by an equation?
+{
+  "reasoning": "The teacher guides the student to build on simpler, familiar concepts—such as the meaning of slope and rise over run—to approach a more complex algebraic task, supporting conceptual application and transfer.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

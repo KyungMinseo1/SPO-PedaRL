@@ -1,0 +1,94 @@
+train:
+  number_of_problems_per_batch: 16
+  num_samples_per_problem: 8
+
+  learning_rate: 5e-7
+  beta: 0.001
+  mu: 2
+
+  reward_list: ["accuracy", "pedagogical alignment", "thinking", "end of conversation", "length"]
+  reward_weights: [0.4, 0.3, 0.2, 0.1, 0.1]
+
+teacher_model:
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  lora:
+    enable: true
+    rank: 64
+    alpha: 64
+  vllm:
+    temperature: 1.0
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_v0: true
+    enforce_eager: true
+
+student_model:
+  model_name_or_path: neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    use_v0: true
+
+    load_and_unload: true
+    enforce_eager: true
+
+judge_model:
+  model_name_or_path: Qwen/Qwen2.5-14B-Instruct-AWQ
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.5
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: false
+    use_awq: true
+    use_v0: true
+    enforce_eager: true
+
+reward_model:
+  model_name_or_path: Answer # If we set this to None we get the -r_sol run.
+
+huggingface:
+  name: <huggingface_name>
+  push_to_hub: false
+
+logging:
+  wandb: true
+  wandb_project: train-rl_LAB(GDPO)_8000
+  wandb_run_name: Qwen2.5-7B-Instruct-SoftPedagogyLambda0.75(Think)
+  run_group: 7b
+  wandb_tags: ["7b"]
+  save_dir: checkpoints/7b(GDPO)_2
+  save_steps: 10
+
+
+generation:
+
+  # This turns on thinking.
+  use_thinking: true
+  force_thinking: true
+
+  # This turns on the hard lambda.
+  extra_penalty_for_rejected_judges: 0.75 # This is the actual lambda we use.
+  use_soft_pedagogical_reward: true # If we set this to true we calculate each rewards following the pedagogical rule independently.
+  ignore_rejected_judge: true # If we set this to true we get the soft lambda runs. (If you use soft pedagogical reward, set this to true)
+
+  use_experimental_shared_memory: false
+
+  number_judge_attempts: 1
+
+  # If we turn this on we get the lambda=0.0 run
+  # number_judge_attempts: 0
+  # judges_rules_prompts_paths: {}
+
+dataset:
+  max_train_examples: 8000

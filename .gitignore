@@ -1,0 +1,7 @@
+wandb
+output
+outputs
+.env
+__pycache__
+checkpoints
+.idea

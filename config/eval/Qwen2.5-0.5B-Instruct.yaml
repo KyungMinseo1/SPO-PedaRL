@@ -1,0 +1,40 @@
+teacher_model:
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  use_openrouter: false
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.5
+    number_of_gpus_per_instance: 2
+    use_v0: true
+    
+student_model:
+  model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.5
+    number_of_gpus_per_instance: 2
+    use_v0: true
+
+judge_model:
+  model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct-AWQ
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.5
+    number_of_gpus_per_instance: 2
+    use_v0: true
+
+reward_model:
+  model_name_or_path: "Answer"
+
+logging:
+  wandb: true
+  wandb_project: eval_GDPO
+  wandb_run_name: TEST
+  run_group: unfinetuned
+  wandb_tags: ["unfinetuned", "0.5b"]

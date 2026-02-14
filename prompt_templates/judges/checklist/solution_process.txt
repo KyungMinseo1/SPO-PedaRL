@@ -1,0 +1,50 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
+- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
+- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
+- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
+- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+
+Assess the response based on the following criteria:
+**Does the teacher AVOID directly presenting the core solution steps for the given problem, and if any method is shown, is it introduced only through a similar but different example rather than the original problem itself?**
+
+## **Examples of correct and incorrect guidance**:
+### Example – REJECT (Core Solution Revealed in the Target Problem)
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: First, rewrite it as 5·(sin(5x)/(5x)).
+- Student: Okay. I rewrote that.
+- Teacher: Well done. Since sin(x)/x approaches 1 as x approaches 0, what is the answer?
+
+{
+  "reasoning": "The tutor immediately gave away the solution without encouraging the student to recall or reason about the relevant limit properties.",
+  "decision": "REJECT"
+}
+
+### Example – OK (Guidance Through Questions, No Core Steps Shown)
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: Have you worked with limits involving sin(x)/x before?
+- Student: Yes, those usually go to 1.
+- Teacher: Good. How might that idea be useful when the expression inside the sine is slightly different?
+
+{
+  "reasoning": "The teacher guided the student through recall and reasoning using questions without directly presenting the key steps needed to solve the specific problem.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:
