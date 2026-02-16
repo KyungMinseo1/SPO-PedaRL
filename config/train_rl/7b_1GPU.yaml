@@ -77,8 +77,12 @@ generation:
   use_thinking: true
   force_thinking: true
 
+  max_group_size: 3
+  branch_size: 3
+
   # This turns on the hard lambda.
   extra_penalty_for_rejected_judges: 0.75 # This is the actual lambda we use.
+  pedgagogical_advantage_lambda: 0.5 # This is the lambda we use for calculating the combined advantage.
   use_soft_pedagogical_reward: true # If we set this to true we calculate each rewards following the pedagogical rule independently.
   ignore_rejected_judge: true # If we set this to true we get the soft lambda runs. (If you use soft pedagogical reward, set this to true)
 

@@ -11,7 +11,7 @@ import json
 import pandas as pd
 from tqdm import tqdm
 from enum import Enum
-from typing import Dict, List
+from typing import Dict, List, Tuple, Optional
 from random import choice
 from jinja2 import Template
 from pydantic import BaseModel
@@ -30,6 +30,8 @@ from src.inference_providers.open_router_inference import OpenRouterInference
 from src.inference_providers.gemini_api_inference import GeminiInference
 import logging
 
+from tree_structure import ConversationTree, TreeNode, TurnPair
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,10 +40,10 @@ class ConversationState(Enum):
     START = 0
     TEACHER_TURN = 1
     STUDENT_TURN = 2
-    JUDGE_TURN = 4
-    GENERATE_SOLUTION = 5
-    REWARD_TURN = 6
-    END = 7
+    JUDGE_TURN = 3
+    GENERATE_SOLUTION = 4
+    REWARD_TURN = 5
+    END = 6
 
 # This is the type of conversation we are having.
 class ConversationType(Enum):
@@ -57,7 +59,6 @@ class JudgeDecision(Enum):
 class JudgeResponse(BaseModel):
     reasoning: str
     decision: JudgeDecision
-
 
 @lru_cache(maxsize=1000)
 def read_template(path: str) -> Template:
@@ -78,20 +79,24 @@ class Conversation:
         generation_cfg: GenerationConfig,
         forced_type: ConversationType = None,
         forced_student_name: str = None,
-        tree_idx: int = None,
     ):
         self.problem = problem
+        self.problem_idx = problem_idx
         self.answer = answer
         self.generation_cfg = generation_cfg
         self.conversation = []  # list of dicts: {role: str, content: str}
         self.state = ConversationState.START
         
-        # NOTE: Add number of turns for future copy & tree_idx
-        self.problem_idx = problem_idx
+        # NOTE: Tree related attributes
+        self.conversation_id = ""  # Classroom에서 할당
+        self.current_node_id: Optional[int] = None  # 현재 TreeNode ID
+        self.parent_node_id: Optional[int] = None  # 부모 노드 ID
+
+        # NOTE: Conversation attributes
+        self.current_conversation: List[dict] = []  # 현재 그룹의 대화
+        self.grouped_conversation = {}
         self.teacher_turns = 0
         self.student_turns = 0
-        self.tree_idx = tree_idx
-        self.parent_tree_idx = None
 
         problem_hash = hash(problem)
         self.type: ConversationType = (
@@ -172,6 +177,47 @@ class Conversation:
                 {"role": "teacher", "content": teacher_start_message}
             )
             self.state = ConversationState.STUDENT_TURN
+
+    def copy(self):
+        """Conversation 복사 (branching용) - MODIFIED"""
+        new_conv = Conversation(
+            problem_idx=self.problem_idx,
+            problem=self.problem,
+            answer=self.answer,
+            generation_cfg=self.generation_cfg,
+            forced_type=self.type,
+            forced_student_name=self.student_name,
+        )
+        
+        # 기존 필드 복사
+        new_conv.teacher_turns = self.teacher_turns
+        new_conv.student_turns = self.student_turns
+        new_conv.state = self.state
+        
+        # Tree 관련 필드는 새로 할당됨
+        # current_conversation은 비움 (새 그룹)
+        
+        return new_conv
+    
+    def get_current_turn_pairs(self) -> List[Tuple[dict, dict]]:
+        """현재 대화에서 (student, teacher) 쌍 추출 - NEW"""
+        turn_pairs = []
+        i = 0
+        while i < len(self.current_conversation) - 1:
+            msg1 = self.current_conversation[i]
+            msg2 = self.current_conversation[i + 1]
+            
+            if msg1.get('role') == 'student' and msg2.get('role') == 'teacher':
+                turn_pairs.append((msg1, msg2))
+                i += 2
+            else:
+                i += 1
+        
+        return turn_pairs
+
+    def clear_current_conversation(self):
+        """현재 그룹 초기화 - NEW"""
+        self.current_conversation = []
 
     @classmethod
     def from_dataframe(
@@ -449,12 +495,13 @@ class Conversation:
     def add_message(self, content: str):
         if self.state == ConversationState.TEACHER_TURN:
             self.conversation.append({"role": "teacher", "content": content})
+            self.current_conversation.append({"role": "teacher", "content": content})
             self.state = ConversationState.STUDENT_TURN
             if (
                 len(self.conversation) >= self.generation_cfg.max_turns
                 or "<end_of_conversation>" in content
             ):
-                self.state = ConversationState.JUDGE_TURN
+                self.state = ConversationState.GENERATE_SOLUTION
         elif self.state == ConversationState.STUDENT_TURN:
             if self.type == ConversationType.ATTEMPTED and len(self.conversation) == 0:
                 self.conversation.append(
@@ -463,12 +510,19 @@ class Conversation:
                         "content": self.initial_attempt_wrapper.render(attempt=content),
                     }
                 )
+                self.current_conversation.append(
+                    {
+                        "role": "student",
+                        "content": self.initial_attempt_wrapper.render(attempt=content)
+                    }
+                )
                 self.state = ConversationState.TEACHER_TURN
             else:
                 self.conversation.append({"role": "student", "content": content})
+                self.current_conversation.append({"role": "student", "content": content})
                 self.state = ConversationState.TEACHER_TURN
         if self._exceeded_max_tokens():
-            self.state = ConversationState.JUDGE_TURN
+            self.state = ConversationState.GENERATE_SOLUTION
 
         # If there is no judge messages in the config we skip to GENERATE_SOLUTION
         if (
@@ -508,6 +562,20 @@ class Conversation:
         if len(self.judge_decisions) == len(
             self.generation_cfg.judges_rules_constructivist_prompts_paths
         ):
+            self.state = ConversationState.GENERATE_SOLUTION
+
+    def add_judge_decision_for_single_turn(self, decisions: List[JudgeResponse], judge_rule_name, turn_hash: str,):
+        if self.state != ConversationState.JUDGE_TURN:
+            raise ValueError("We are not in the judge turn state")
+        self.judge_decisions[turn_hash] = decisions
+        for decision in decisions:
+            if decision.decision == JudgeDecision.REJECT:
+                self.failed_judges = True
+                # NOTE: For single-turn setting, making conversation to end when the judge rejected it is risky.
+                if not self.generation_cfg.ignore_rejected_judge:
+                    self.state = ConversationState.END
+                    return
+        if len(self.judge_decisions) == self.generation_cfg.number_judge_attempts:
             self.state = ConversationState.GENERATE_SOLUTION
 
     def add_solutions(self, solutions: List[str]):
@@ -577,6 +645,7 @@ class Conversation:
         return average_rm_reward
 
     def get_accuracy_reward(self):
+        # NOTE: This will be always 0 or 1 in SPO.
         average_accuracy_reward = (
             sum(self.accuracy_rewards) / len(self.accuracy_rewards) if len(self.accuracy_rewards) > 0 else None
         )
@@ -846,7 +915,9 @@ class Classroom:
         )
 
         self.sampling_params_student_solution = SamplingParams(
-            n=generation_cfg.number_student_attempts,
+            # NOTE: For SPO, we fix n to 1
+            # n=generation_cfg.number_student_attempts,
+            n=1,
             temperature=student_model_cfg.vllm.temperature,
             top_k=student_model_cfg.vllm.top_k,
             top_p=student_model_cfg.vllm.top_p,
@@ -867,6 +938,114 @@ class Classroom:
         )
 
         self.conversation_sets = []
+
+        # NOTE: Variables for tree-based conversations
+        self.conversation_trees = {}
+        self.global_tree_idx = {}
+        self.conversation_id_counter = 0
+        
+        # NEW: Advantage storage
+        self.node_advantages = {}  # node_id -> advantages
+        self.turn_pair_advantages = {}  # (node_id, turn_idx) -> turn advantages
+
+    def _initialize_conversation_tree(self, problem_idx: int):
+        """문제별 Tree 초기화"""
+        if problem_idx not in self.conversation_trees:
+            self.conversation_trees[problem_idx] = ConversationTree(problem_idx)
+    
+    def _assign_conversation_id(self, conv: Conversation) -> str:
+        """Conversation ID 부여"""
+        self.global_conversation_id_counter += 1
+        conv_id = f"conv_{conv.problem_idx}_{self.global_conversation_id_counter}"
+        conv.conversation_id = conv_id
+        return conv_id
+    
+    def _create_initial_tree_node(self, conv: Conversation) -> TreeNode:
+        """초기 TreeNode 생성"""
+        problem_idx = conv.problem_idx
+        self._initialize_conversation_tree(problem_idx)
+        
+        tree = self.conversation_trees[problem_idx]
+        node = tree.create_node(
+            conversation_id=conv.conversation_id,
+            parent_node_id=None  # Root
+        )
+        
+        conv.current_node_id = node.node_id
+        conv.parent_node_id = None
+        
+        tree.update_leaf_node_mapping(conv.conversation_id, node.node_id)
+        
+        logger.info(f"Created initial node {node.node_id} for conversation {conv.conversation_id}")
+        return node
+    
+    def _save_current_conversation_to_tree(self, conv: Conversation):
+        """현재 대화를 TreeNode에 저장"""
+        if conv.current_node_id is None:
+            logger.warning(f"Conversation {conv.conversation_id} has no current_node_id")
+            return
+        
+        tree = self.conversation_trees[conv.problem_idx]
+        node = tree.nodes.get(conv.current_node_id)
+        
+        if not node:
+            logger.warning(f"Node {conv.current_node_id} not found")
+            return
+        
+        # Turn pairs 추출 및 저장
+        turn_pairs = conv.get_current_turn_pairs()
+        for student_msg, teacher_msg in turn_pairs:
+            node.add_turn_pair(student_msg, teacher_msg)
+        
+        logger.info(
+            f"Saved {len(turn_pairs)} turn pairs to node {node.node_id} "
+            f"(conversation {conv.conversation_id})"
+        )
+    
+    def _branch_conversation(
+        self,
+        original_conv: Conversation,
+        branch_size: int
+    ) -> List[Conversation]:
+        """Conversation branching"""
+        # 1. 현재 대화 저장
+        self._save_current_conversation_to_tree(original_conv)
+        
+        # 2. 자식 노드 및 conversations 생성
+        tree = self.conversation_trees[original_conv.problem_idx]
+        parent_node_id = original_conv.current_node_id
+        
+        new_conversations = []
+        for _ in range(branch_size):
+            # Conversation 복사
+            new_conv = original_conv.copy()
+            
+            # 새 ID 할당
+            self._assign_conversation_id(new_conv)
+            
+            # 자식 TreeNode 생성
+            child_node = tree.create_node(
+                conversation_id=new_conv.conversation_id,
+                parent_node_id=parent_node_id
+            )
+            
+            new_conv.current_node_id = child_node.node_id
+            new_conv.parent_node_id = parent_node_id
+            
+            # Leaf 매핑 업데이트
+            tree.update_leaf_node_mapping(new_conv.conversation_id, child_node.node_id)
+            
+            # 현재 대화 초기화
+            new_conv.clear_current_conversation()
+            
+            new_conversations.append(new_conv)
+        
+        logger.info(
+            f"Branched conversation {original_conv.conversation_id} "
+            f"into {branch_size} children from node {parent_node_id}"
+        )
+        
+        return new_conversations
 
     def _compute_rewards_from_prompts(
         self, prompts: List[str], answers: List[str]
@@ -961,23 +1140,67 @@ class Classroom:
                 forced_type = None
 
         # `conversations` is a list of Conversation class with different problems(repeated for branch_size)
-        global_tree_idx = [(self.generation_cfg.branch_size - 1) for _ in range(len(problems))]\
-            if self.generation_cfg.branch_size is not None else [0] * len(problems) # Save tree idx for number of problems
+        self.conversation_trees = {}
+
+        for problem_idx in range(len(problems)):
+            tree = ConversationTree(problem_idx)
+        
+            # Create virtual root node (no actual conversation)
+            virtual_root = tree.create_node(
+                conversation_id=f"virtual_root_{problem_idx}",
+                parent_node_id=None
+            )
+            
+            self.conversation_trees[problem_idx] = tree
+            logger.info(f"Created tree for problem {problem_idx} with virtual root")
+
         conversations = []
+        branch_size = self.generation_cfg.branch_size if self.generation_cfg.branch_size is not None else 1
+        
         for problem_idx, (problem, answer) in tqdm(
             enumerate(zip(problems, answers)),
             total=len(problems),
             desc="Initializing conversations",
         ):
-            conversations.extend([
-                Conversation(problem_idx, problem, answer, self.generation_cfg, forced_type, tree_idx=tree_idx)
-                for tree_idx in range(self.generation_cfg.branch_size)
-            ])
+            tree = self.conversation_trees[problem_idx]
+            virtual_root_id = 0  # Virtual root is always node_id=0
+            
+            # Create branch_size conversations for each problem
+            for branch_idx in range(branch_size):
+                # Create conversation
+                conv = Conversation(
+                    problem_idx=problem_idx,
+                    problem=problem,
+                    answer=answer,
+                    generation_cfg=self.generation_cfg,
+                    forced_type=forced_type
+                )
+                
+                # Assign conversation ID
+                self._assign_conversation_id(conv)
+                
+                # Create child node of virtual root
+                node = tree.create_node(
+                    conversation_id=conv.conversation_id,
+                    parent_node_id=virtual_root_id
+                )
+                
+                # Set node IDs
+                conv.current_node_id = node.node_id
+                conv.parent_node_id = virtual_root_id
+                
+                # Update leaf node mapping
+                tree.update_leaf_node_mapping(conv.conversation_id, node.node_id)
+                
+                conversations.append(conv)
+        
+        logger.info(f"Initialized {len(conversations)} conversations")
 
         # Start the conversations. (= initialization)
         for conversation in conversations:
             conversation.start_conversation()
 
+        # NOTE: Skipping initial attempt!
         # Only for eval we compute how good the model was initially.
         if compute_initial_attempt:
             logger.info(("=" * 10) + "Computing initial attempts" + ("=" * 10))
@@ -1019,7 +1242,7 @@ class Classroom:
                 conv.add_initial_rewards(conv_rewards)
                 rewards = rewards[curr_len:]
 
-        round_counter = 1
+        round_counter = 0
 
         # We now alternate between teacher and student turns until the conversation is not in the conversation student/teacher turn state
         while any(
@@ -1035,23 +1258,29 @@ class Classroom:
             ]:
                 # NOTE: Copy conversations that reached max_group_size
                 if state_to_process == ConversationState.STUDENT_TURN:
-                    idx_to_copy = [
+                    idx_to_branch = [
                         idx
                         for idx, conv in enumerate(conversations)
-                        if conv.teacher_turns % self.generation_cfg.max_group_size == 0 and conv.teacher_turns > 0 and conv.state == state_to_process
+                        if (conv.teacher_turns % self.generation_cfg.max_group_size == 0
+                            and conv.teacher_turns > 0
+                            and conv.state == state_to_process)
                     ]
-                    if idx_to_copy:
+                    if idx_to_branch:
                         logger.info(
-                            f"Copying {len(idx_to_copy)} conversations that reached max group size of {self.generation_cfg.max_group_size}"
+                            f"Branching {len(idx_to_branch)} conversations that reached max group size of {self.generation_cfg.max_group_size}"
                         )
                         conversations = conversations.copy()
-                        for idx in idx_to_copy:
-                            copied_conversation = [conversations[idx].copy()] * (self.generation_cfg.branch_size - 1 if self.generation_cfg.branch_size is not None else 0)
-                            for copied_conv in copied_conversation:
-                                copied_conv.parent_tree_idx = conversations[idx].tree_idx
-                                copied_conv.tree_idx = conversations[idx].tree_idx + 1
-                                global_tree_idx[copied_conv.problem_idx] += 1
-                            conversations.extend(copied_conversation)
+                        for idx in sorted(idx_to_branch, reverse=True):
+                            original_conv = conversations[idx]
+                            
+                            # Branch the conversation
+                            new_convs = self._branch_conversation(
+                                original_conv,
+                                branch_size
+                            )
+
+                            del conversations[idx]
+                            conversations.extend(new_convs)
 
                 logger.info(
                     ("=" * 10)
@@ -1060,6 +1289,7 @@ class Classroom:
                 )
 
                 start_time = time.time()
+
                 # We get all conversations that are in the state_to_process state
                 conversations_to_process = [
                     conversation
@@ -1068,13 +1298,6 @@ class Classroom:
                 ]
                 if len(conversations_to_process) == 0:
                     continue
-
-                # We get the messages from the conversations (not used further here since helper methods call get_conversation internally)
-                messages = [
-                    # conversation.get_conversation()
-                    conversation.get_conversation() if original_prompts else conversation.get_constructivist_conversation() 
-                    for conversation in conversations_to_process
-                ]
 
                 # We get the responses from the model using our helper functions.
                 if state_to_process == ConversationState.TEACHER_TURN:
@@ -1086,115 +1309,20 @@ class Classroom:
 
                 # Next round counter.
                 round_counter += 1
-
                 logger.info(f"Took {time.time() - start_time} seconds.")
 
         # We can put both to sleep.
         self.teacher_model.sleep()
         self.student_model.sleep()
 
-        # We now evaluate the judge rules
-        logger.info(("=" * 10) + "Running judges" + ("=" * 10))
-        start_time = time.time()
+        # Save remaining conversations to tree
+        logger.info("Saving remaining conversations to tree")
+        for conv in conversations:
+            if conv.current_conversation:
+                self._save_current_conversation_to_tree(conv)
 
-        num_attempts_required = self.generation_cfg.number_judge_attempts
-        max_rounds = 5
-        while any(
-            [
-                conversation.state == ConversationState.JUDGE_TURN
-                for conversation in conversations
-            ]
-        ):
-            logger.info(("=" * 15) + "Judges round" + ("=" * 15))
-            # Select conversations in judge turn.
-            conversations_to_process = [
-                conv
-                for conv in conversations
-                if conv.state == ConversationState.JUDGE_TURN
-            ]
-
-            # NOTE: Extract single-turn conversations (group first into segments)
-            grouped_segments = {
-                idx: {f"group_{i}" : {} for i in range((((self.generation_cfg.max_turns + 1) // 2) // self.generation_cfg.max_group_size + 1) ** self.generation_cfg.branch_size)}
-                for idx, _ in enumerate(problems)
-            }
-            for conv in conversations_to_process:
-                step_size = self.generation_cfg.max_group_size * 2
-                current_len = len(conv.conversation)
-                split_idx = list(range(0, current_len, step_size))
-                for group_num, start_idx in enumerate(split_idx):
-                    end_idx = start_idx + step_size
-                    extracted_turns = conv.split_conversation_into_single_turn(start_idx, end_idx)
-                    group_key = f"group_{group_num}"
-                    if group_key not in grouped_segments[conv.problem_idx]:
-                        grouped_segments[conv.problem_idx][group_key] = {}
-                    
-                    grouped_segments[conv.problem_idx][group_key][conv.tree_idx] = extracted_turns
-                
-            unique_turns_to_judge = {}
-
-
-
-
-
-
-
-
-            # Dictionary to collect valid JudgeResponse objects per conversation.
-            valid_responses = {conv: [] for conv in conversations_to_process}
-
-            for _judge_round in range(max_rounds):
-                logger.info(
-                    ("=" * 10) + f"Judges inner round {_judge_round}" + ("=" * 10)
-                )
-                pending = []  # List of tuples: (conversation, message)
-                # For each conversation, schedule as many generations as are missing.
-                for conv in conversations_to_process:
-                    missing = num_attempts_required - len(valid_responses[conv])
-                    if missing > 0:
-                        for _ in range(missing):
-                            # pending.append((conv, conv.get_conversation()))
-                            pending.append((conv, conv.get_conversation())) if original_prompts else pending.append((conv, conv.get_constructivist_conversation()))
-
-                if not pending:
-                    break  # All conversations have enough valid responses.
-                logger.info("Number of pending judge responses:" + str(len(pending)))
-
-                # Run a batch for all pending messages.
-                pending_messages = [msg for _, msg in pending]
-                responses = self.judge_model.run_batch(
-                    pending_messages, self.sampling_params_judge
-                )
-
-                # Map each response back to its conversation.
-                for (conv, _), response in zip(pending, responses):
-                    for output in response.outputs:
-                        try:
-                            # We only take stuff that is between { and }
-                            out_text = output.text[
-                                output.text.find("{") : output.text.rfind("}") + 1
-                            ].replace("\\", "")
-                            decision = JudgeResponse(
-                                **json.loads(out_text, strict=False)
-                            )
-                            valid_responses[conv].append(decision)
-                        except Exception as e:
-                            continue
-
-            # For any conversation still missing valid responses, add default decisions.
-            for conv in conversations_to_process:
-                while len(valid_responses[conv]) < num_attempts_required:
-                    logger.warning(
-                        "Judge decision ran out of attempts, adding default decision"
-                    )
-                    valid_responses[conv].append(
-                        JudgeResponse(reasoning="max turns exceeded", decision="OK")
-                    )
-                # conv.add_judge_decisions(valid_responses[conv])
-                conv.add_judge_decisions(valid_responses[conv]) if original_prompts else conv.add_constructivist_judge_decisions(valid_responses[conv])
-
-        self.judge_model.sleep()
-        logger.info(f"Took {time.time() - start_time} seconds.")
+        # We now evaluate the judge rules and add the judge decisions to the conversations.
+        self.run_pedagogical_judges_on_tree()
 
         # We now generate the solutions
         logger.info(("=" * 10) + "Sampling solutions" + ("=" * 10))
@@ -1240,14 +1368,17 @@ class Classroom:
                 lengths.append(len(prompts))
                 all_prompts.extend(prompts)
                 all_answers.extend([conv.answer] * len(prompts))
-            # rewards = self._compute_rewards_from_prompts(all_prompts, all_answers)
             rewards = self._compute_rewards_from_prompts(all_prompts, all_answers) if original_prompts else self._compute_constructivist_rewards_from_prompts(all_prompts, all_answers)
             for conv in reward_convs:
                 curr_len = lengths.pop(0)
                 conv_rewards = rewards[:curr_len]
-                # conv.add_rewards(conv_rewards)
                 conv.add_accuracy_rewards(conv_rewards)
                 rewards = rewards[curr_len:]
+
+                # NOTE: Add accuracy reward to tree as well for later use.
+                accuracy_reward = conv.get_accuracy_reward()
+                tree = self.conversation_trees[conv.problem_idx]
+                tree.assing_reward_to_conversation(conv.current_node_id, accuracy_reward)
 
         logger.info(f"Took {time.time() - start_time} seconds.")
         # Free memory
@@ -1336,6 +1467,194 @@ class Classroom:
 
         self.judge_model.sleep()
         logger.info(f"Took {time.time() - start_time} seconds.")
+
+    def run_pedagogical_judges_on_tree(self):
+        """
+        Run pedagogical judges on all turn pairs in the tree
+        """
+        logger.info("=" * 20 + " Running pedagogical judges on tree " + "=" * 20)
+        rule_names = self.generation_cfg.judges_rules_constructivist_prompts_paths.keys()
+
+        all_judge_tasks = []
+        
+        # Collect all turn pairs from all trees
+        for problem_idx, tree in self.conversation_trees.items():
+            for node_id, node in tree.nodes.items():
+                # Skip virtual root (no turn pairs)
+                if not node.turn_pairs:
+                    continue
+                
+                for turn_idx, turn_pair in enumerate(node.turn_pairs):
+                    # Construct judge messages
+                    for rule_name in rule_names:
+                        messages = self._construct_judge_messages(turn_pair, rule_name)
+                        all_judge_tasks.append((tree, node, turn_idx, rule_name, messages))
+        
+        logger.info(f"Total pedagogical judge tasks: {len(all_judge_tasks)}")
+        
+        if not all_judge_tasks:
+            logger.warning("No judge tasks to process")
+            return
+        
+        # Process in batches
+        batch_size = 16
+        num_attempts = self.generation_cfg.number_judge_attempts
+        
+        for i in range(0, len(all_judge_tasks), batch_size):
+            batch = all_judge_tasks[i:i+batch_size]
+            batch_messages = [task[4] for task in batch]
+            
+            # Run judges multiple times
+            all_responses = []
+            for _ in range(num_attempts):
+                responses = self.judge_model.run_batch(
+                    batch_messages,
+                    self.sampling_params_judge
+                )
+                all_responses.append(responses)
+            
+            # Store results
+            for task_idx, (tree, node, turn_idx, rule_name, _) in enumerate(batch):
+                turn_pair = node.turn_pairs[turn_idx]
+                
+                # Parse each attempt's results
+                valid_decisions = []
+                for attempt_responses in all_responses:
+                    response = attempt_responses[task_idx]
+                    
+                    for output in response.outputs:
+                        try:
+                            out_text = output.text[
+                                output.text.find("{"):output.text.rfind("}")+1
+                            ].replace("\\", "")
+                            decision = JudgeResponse(**json.loads(out_text, strict=False))
+                            valid_decisions.append(decision)
+                        except Exception as e:
+                            continue
+                
+                # Store judge results
+                if valid_decisions:
+                    if rule_name not in turn_pair.judge_results:
+                        turn_pair.judge_results[rule_name] = []
+                    turn_pair.judge_results[rule_name].extend(valid_decisions)
+                else:
+                    logger.warning(
+                        f"No valid judge decisions for node {node.node_id}, "
+                        f"turn {turn_idx}, rule '{rule_name}'"
+                    )
+        
+        # Compute pedagogical rewards from judge results
+        self._compute_pedagogical_rewards_from_judges()
+        
+        logger.info("Pedagogical judges completed")
+
+    def _hide_thinking(self, content: str):
+        # We remove everything between <think> and </think>
+        return re.sub(r"<think>.*?</think>", "", content, flags=re.S).replace(
+            "<end_of_conversation>", ""
+        )
+
+    def _get_hidden_conversation(self, messages):
+        conversation = []
+        for message in messages:
+            conversation.append(
+                {
+                    "role": message["role"],
+                    "content": self._hide_thinking(message["content"]),
+                }
+            )
+        return conversation
+
+    def _construct_judge_messages(
+        self,
+        current_turn: TurnPair,
+        rule_name: str
+    ) -> List[dict]:
+        """Construct messages for judge evaluation"""
+        single_turn_messages = []
+        # Include current turn
+        single_turn_messages.append(current_turn.student_message)
+        single_turn_messages.append(current_turn.teacher_message)
+
+        rule_prompt_path = self.generation_cfg.judges_rules_constructivist_prompts_paths[rule_name]
+
+        if hasattr(self.generation_cfg, 'judge_system_prompt_path'):
+            prompt = [
+                {
+                    "role": "user",
+                    "content": Template(
+                        open(
+                            rule_prompt_path
+                        ).read()
+                    ).render(conversation=self._get_hidden_conversation(single_turn_messages)),
+                }
+            ]
+
+        return prompt
+
+    def _compute_pedagogical_rewards_from_judges(self):
+        """Compute pedagogical rewards from judge results"""
+        for tree in self.conversation_trees.values():
+            for node in tree.nodes.values():
+                for turn_pair in node.turn_pairs:
+                    if turn_pair.judge_results:
+                        total_ok_count = 0
+                        number_of_judge_decisions = 0
+                        for decisions in turn_pair.judge_results.values():
+                            if decisions:
+                                # Compute OK ratio as reward
+                                ok_count = sum(
+                                    1 for d in decisions
+                                    if d.decision == JudgeDecision.OK
+                                )
+                                total_ok_count += ok_count
+                                number_of_judge_decisions += len(decisions)
+                        if total_ok_count > 0 and number_of_judge_decisions > 0:
+                            turn_pair.pedagogical_reward = total_ok_count / number_of_judge_decisions
+                        else:
+                            turn_pair.pedagogical_reward = 0.0
+                    else:
+                        turn_pair.pedagogical_reward = 0.0
+
+    def compute_all_advantages(
+        self,
+        lambda_pedagogical: float = 1.0
+    ) -> Dict[int, Dict[str, float]]:
+        """모든 Tree의 advantages 계산 - TURN PAIR 레벨로!"""
+        logger.info("Computing turn-pair-level advantages for all trees")
+        
+        all_advantages = {}  # node_id -> advantages (backward compatibility)
+        all_turn_advantages = {}  # (node_id, turn_idx) -> turn pair advantages
+        
+        for problem_idx, tree in self.conversation_trees.items():
+            logger.info(f"Computing advantages for problem {problem_idx}")
+            
+            # Tree 레벨 계산
+            tree.build_levels()
+            tree.compute_v_values()
+            tree.compute_accuracy_advantages()
+            tree.compute_pedagogical_advantages()
+            
+            # Turn pair에 advantage 할당
+            tree.assign_advantages_to_turn_pairs(lambda_pedagogical)
+            
+            # Node-level advantages (backward compatibility)
+            node_advantages = tree.get_all_advantages()
+            all_advantages.update(node_advantages)
+            
+            # Turn-pair-level advantages (NEW!)
+            turn_advantages = tree.get_all_turn_pair_advantages()
+            for turn_adv in turn_advantages:
+                key = (turn_adv['node_id'], turn_adv['turn_idx'])
+                all_turn_advantages[key] = turn_adv
+        
+        logger.info(f"Computed advantages for {len(all_advantages)} nodes and {len(all_turn_advantages)} turn pairs")
+        
+        # 두 가지를 모두 저장
+        self.node_advantages = all_advantages
+        self.turn_pair_advantages = all_turn_advantages
+        
+        return all_advantages  # backward compatibility
 
     def to_pd_latest(self):
         return pd.concat(

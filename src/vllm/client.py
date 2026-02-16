@@ -17,37 +17,41 @@ def sample_conversations(
     server_port: int = 8000,
     num_samples_per_problem: int = 1,
     tokenizer: PreTrainedTokenizer = None,
-) -> List[RequestOutput]:
-    server_url = f"http://localhost:{server_port}/sample_conversations"
+):
+    """
+    Returns:
+        request_outputs: List[RequestOutput]
+        turn_pair_advantages_list: List[List[Dict]]  # NEW! Each conversation has a list of turn pair advantages
+    """
 
-    """
-    actual_problems = []
-    for problem in problems:
-        actual_problems.extend([problem] * num_samples_per_problem)
-    """
-        
+    server_url = f"http://localhost:{server_port}/sample_conversations"
+    
     # NOTE: We should expand trees based on one problems sample -> discard repeating problems and answers for num_samples_per_problem times.
     actual_problems = problems
-
     answers = [str(answer) for answer in answers]
     response = requests.post(
         server_url, json={"problems": actual_problems, "meta": meta, "answers": answers}
     )
     response.raise_for_status()
 
-    response_list = response.json()
-    results: list[str] = [item for item in response_list]
+    response_dict = response.json()
+    conversations = response_dict["conversations"]
 
     request_outputs = []
-    for i in range(0, len(results)):
+    turn_pair_advantages_list = []  # NEW!
+
+    for conv_data in conversations:
+        messages = conv_data["messages"]
+        turn_pair_advs = conv_data.get("turn_pair_advantages", [])  # NEW!
+        
         request_output = RequestOutput(
-            request_id="",
+            request_id=conv_data["conversation_id"],
             prompt="",
             outputs=[
                 CompletionOutput(
                     index=0,
-                    text=tokenizer.apply_chat_template(results[i], tokenize=False),
-                    token_ids=tokenizer.apply_chat_template(results[i], tokenize=True),
+                    text=tokenizer.apply_chat_template(messages, tokenize=False),
+                    token_ids=tokenizer.apply_chat_template(messages, tokenize=True),
                     cumulative_logprob=0.0,
                     logprobs=[],
                 )
@@ -57,8 +61,9 @@ def sample_conversations(
             finished=True,
         )
         request_outputs.append(request_output)
-
-    return request_outputs
+        turn_pair_advantages_list.append(turn_pair_advs)  # NEW!
+    
+    return request_outputs, turn_pair_advantages_list  # CHANGED!
 
 
 def get_end_rm_reward(

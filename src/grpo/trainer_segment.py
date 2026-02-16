@@ -39,7 +39,7 @@ import wandb
 import deepspeed
 import warnings
 from collections import defaultdict
-from typing import Any, Callable, Optional, Sized, Union
+from typing import Any, Callable, Optional, Sized, Union, Tuple, Dict, List
 
 import datasets
 import torch
@@ -497,6 +497,140 @@ class ClassroomGRPOTrainer(Trainer):
         return model
 
     ####################################################################################
+    # Map turn-pair advantages to token-level advantages
+    ####################################################################################
+    def _map_turn_pair_advantages_to_tokens(
+        self,
+        completion_ids: torch.Tensor,  # (B, L)
+        turn_pair_advantages_list: List[List[Dict]],  # List[List[turn_pair_adv_dict]]
+    ) -> torch.Tensor:
+        """
+        Turn pair별 advantage를 토큰 레벨로 매핑
+        
+        Args:
+            completion_ids: (batch_size, seq_len)
+            turn_pair_advantages_list: 각 conversation의 turn pair advantages
+        
+        Returns:
+            token_advantages: (batch_size, seq_len) - 각 토큰의 advantage
+        """
+        batch_size, seq_len = completion_ids.shape
+        device = completion_ids.device
+        
+        # 결과 텐서 초기화
+        token_advantages = torch.zeros(batch_size, seq_len, device=device, dtype=torch.float32)
+        
+        # Chat template tokens
+        if "llama" in self.model_name_or_path.lower():
+            start_header_tok = self.processing_class.encode(
+                "<|start_header_id|>", add_special_tokens=False
+            )[0]
+            end_header_tok = self.processing_class.encode(
+                "<|end_header_id|>", add_special_tokens=False
+            )[0]
+            assistant_tok = self.processing_class.encode(
+                "assistant", add_special_tokens=False
+            )[0]
+            eot_tok = self.processing_class.encode(
+                "<|eot_id|>", add_special_tokens=False
+            )[0]
+        else:
+            start_token = self.processing_class.apply_chat_template(
+                [{"role": "system", "content": ""}]
+            )[0]
+            assistant_token = self.processing_class.encode("assistant")[0]
+            eos_token = self.processing_class.eos_token_id
+        
+        # 각 시퀀스에 대해 처리
+        for batch_idx in range(batch_size):
+            seq = completion_ids[batch_idx].tolist()
+            turn_pair_advs = turn_pair_advantages_list[batch_idx]
+            
+            if not turn_pair_advs:
+                # turn pair advantages가 없으면 0으로 유지
+                continue
+            
+            # Assistant 턴의 시작/끝 위치 찾기
+            if "llama" in self.model_name_or_path.lower():
+                assistant_turn_spans = self._find_assistant_turns_llama(
+                    seq, start_header_tok, end_header_tok, assistant_tok, eot_tok
+                )
+            else:
+                assistant_turn_spans = self._find_assistant_turns_qwen(
+                    seq, start_token, assistant_token, eos_token
+                )
+            
+            # Turn pair와 매칭
+            if len(assistant_turn_spans) != len(turn_pair_advs):
+                logger.warning(
+                    f"Batch {batch_idx}: Assistant turns ({len(assistant_turn_spans)}) "
+                    f"!= turn pairs ({len(turn_pair_advs)}). Using fallback."
+                )
+                # Fallback: 첫 번째 turn pair의 combined advantage를 전체에 적용
+                if turn_pair_advs:
+                    token_advantages[batch_idx, :] = turn_pair_advs[0]['combined_advantage']
+                continue
+            
+            # 각 assistant 턴에 해당하는 advantage 할당
+            for turn_idx, (start_pos, end_pos) in enumerate(assistant_turn_spans):
+                if turn_idx < len(turn_pair_advs):
+                    adv = turn_pair_advs[turn_idx]['combined_advantage']
+                    token_advantages[batch_idx, start_pos:end_pos] = adv
+        
+        return token_advantages
+    
+    def _find_assistant_turns_llama(self, seq, start_header_tok, end_header_tok, assistant_tok, eot_tok):
+        """Llama-3 형식의 assistant 턴 찾기"""
+        spans = []
+        inside_msg = False
+        inside_asst = False
+        current_start = None
+        
+        for i, tok in enumerate(seq):
+            if tok == start_header_tok:
+                inside_msg = True
+                inside_asst = False
+            elif inside_msg and tok == assistant_tok:
+                inside_asst = True
+            elif tok == end_header_tok and inside_asst:
+                # Assistant content 시작
+                current_start = i + 1
+            elif tok == eot_tok and inside_asst and current_start is not None:
+                # Assistant content 끝
+                spans.append((current_start, i + 1))  # eot_tok 포함
+                inside_msg = False
+                inside_asst = False
+                current_start = None
+        
+        return spans
+    
+    def _find_assistant_turns_qwen(self, seq, start_token, assistant_token, eos_token):
+        """Qwen 형식의 assistant 턴 찾기"""
+        spans = []
+        inside_msg = False
+        inside_asst = False
+        current_start = None
+        
+        for i, tok in enumerate(seq):
+            if tok == start_token:
+                inside_msg = True
+                inside_asst = False
+            elif inside_msg and tok == assistant_token:
+                inside_asst = True
+                # Assistant content는 다음 토큰부터 시작
+                # 보통 assistant 토큰 뒤에 몇 개의 special token이 더 있음
+                # 간단히 +3 정도로 skip (실제로는 더 정교하게 해야 할 수도)
+                current_start = i + 3
+            elif tok == eos_token and inside_asst and current_start is not None:
+                # Assistant content 끝
+                spans.append((current_start, i + 1))
+                inside_msg = False
+                inside_asst = False
+                current_start = None
+        
+        return spans
+
+    ####################################################################################
     # Mask user turns, used for multi-turn RL Training
     ####################################################################################
     def _compute_assistant_mask(self, input_ids):
@@ -809,7 +943,7 @@ class ClassroomGRPOTrainer(Trainer):
                 f"Generating completions for {len(ordered_set_of_prompts)} unique problems, with {self.num_generations} generations each and answers {real_answers}"
             )
 
-            all_outputs: list[RequestOutput] = sample_conversations(
+            all_outputs, all_turn_pair_advantages = sample_conversations(
                 ordered_set_of_prompts,
                 answers=real_answers,
                 meta=meta_info_shared,
@@ -818,6 +952,23 @@ class ClassroomGRPOTrainer(Trainer):
                 tokenizer=self.tokenizer,
             )
             logger.info(f"Generated completions for {len(all_outputs)} prompts")
+
+            expected_count = len(ordered_set_of_prompts) * self.num_generations
+            actual_count = len(all_outputs)
+
+            if actual_count != expected_count:
+                logger.warning(
+                    f"Expected {expected_count} outputs, but got {actual_count}. This might lead to issues in training."
+                )
+                if actual_count > expected_count:
+                    logger.info(f"Truncating to {expected_count} conversations")
+                    all_outputs = all_outputs[:expected_count]
+                    all_turn_pair_advantages = all_turn_pair_advantages[:expected_count]
+                elif actual_count < expected_count:
+                    logger.info(f"Padding to {expected_count} conversations")
+                    padding_count = expected_count - actual_count
+                    all_outputs.extend([all_outputs[-1]] * padding_count)
+                    all_turn_pair_advantages.extend([all_turn_pair_advantages[-1]] * padding_count)
 
             if self.use_experimental_shared_memory:
                 logger.info("Closing the shared memory")
@@ -828,6 +979,7 @@ class ClassroomGRPOTrainer(Trainer):
                     shm.unlink()
         else:
             all_outputs = []
+            all_turn_pair_advantages = []
             if self.use_experimental_shared_memory:
                 logger.info("Deleting state_dict memory")
                 try:
@@ -859,6 +1011,8 @@ class ClassroomGRPOTrainer(Trainer):
         self.accelerator.wait_for_everyone()
         all_outputs_ = gather_object(all_outputs)
         all_outputs = all_outputs_
+        all_turn_pair_advantages_ = gather_object(all_turn_pair_advantages)
+        all_turn_pair_advantages = all_turn_pair_advantages_
 
         all_inputs = inputs
         all_prompts = prompts
@@ -872,6 +1026,7 @@ class ClassroomGRPOTrainer(Trainer):
         logger.info(f"Start slice: {start_slice}, Step size: {step_size}")
 
         outputs = all_outputs[start_slice : start_slice + step_size]
+        turn_pair_advantages_from_tree = all_turn_pair_advantages[start_slice : start_slice + step_size]
         prompts = prompts[start_slice : start_slice + step_size]
         prompts_text = prompts_text[start_slice : start_slice + step_size]
         prompt_ids = prompt_ids[start_slice : start_slice + step_size]
@@ -935,6 +1090,51 @@ class ClassroomGRPOTrainer(Trainer):
         )
         completions = completions_text
 
+        # NEW: Turn pair별 advantage를 토큰 레벨로 매핑!
+        logger.info("Mapping turn-pair advantages to token-level advantages")
+        token_level_advantages = self._map_turn_pair_advantages_to_tokens(
+            completion_ids,
+            turn_pair_advantages_from_tree
+        )  # (batch_size, seq_len)
+        
+        # Assistant mask 적용하여 최종 advantage 계산
+        assistant_mask = self._compute_assistant_mask(completion_ids).float()  # (B, L)
+        
+        # Completion mask (패딩 제외)
+        completion_mask_float = (completion_ids != self.processing_class.pad_token_id).float()
+        
+        # 토큰별 advantage에 마스크 적용
+        masked_token_advantages = token_level_advantages * assistant_mask * completion_mask_float
+        
+        # 각 시퀀스의 평균 advantage 계산 (per-sequence advantage for logging)
+        active_token_counts = (assistant_mask * completion_mask_float).sum(dim=1).clamp(min=1)
+        sequence_advantages = masked_token_advantages.sum(dim=1) / active_token_counts
+        
+        logger.info(
+            f"Token-level advantages: mean={sequence_advantages.mean():.3f}, "
+            f"std={sequence_advantages.std():.3f}, "
+            f"min={sequence_advantages.min():.3f}, max={sequence_advantages.max():.3f}"
+        )
+
+        # 정규화 옵션 (선택적)
+        if hasattr(self.args, 'normalize_tree_advantages') and self.args.normalize_tree_advantages:
+            # Group-wise normalization
+            adv_grouped_mean = sequence_advantages.view(-1, self.num_generations).mean(dim=1)
+            adv_grouped_mean = adv_grouped_mean.repeat_interleave(self.num_generations, dim=0)
+            sequence_advantages = sequence_advantages - adv_grouped_mean
+            
+            # 토큰 레벨에도 반영
+            token_level_advantages = token_level_advantages - adv_grouped_mean.unsqueeze(1)
+
+            if self.args.scale_rewards:
+                adv_grouped_std = sequence_advantages.view(-1, self.num_generations).std(dim=1)
+                adv_grouped_std = adv_grouped_std.repeat_interleave(self.num_generations, dim=0)
+                sequence_advantages = sequence_advantages / (adv_grouped_std + 1e-4)
+                
+                # 토큰 레벨에도 반영
+                token_level_advantages = token_level_advantages / (adv_grouped_std.unsqueeze(1) + 1e-4)
+
+        """
         rewards_per_func = torch.zeros(
             len(prompts), len(self.reward_funcs), device=device
         )
@@ -1011,6 +1211,7 @@ class ClassroomGRPOTrainer(Trainer):
         advantages = rewards - mean_grouped_rewards
         if self.args.scale_rewards:
             advantages = advantages / (std_grouped_rewards + 1e-4)
+        """
 
         # Slice to keep only the local part of the data
         process_slice = slice(
@@ -1030,6 +1231,7 @@ class ClassroomGRPOTrainer(Trainer):
         )
         self._metrics[mode]["completion_length"].append(completion_length)
 
+        """
         reward_per_func = rewards_per_func.mean(0)
         for i, reward_func in enumerate(self.reward_funcs):
             if isinstance(
@@ -1044,7 +1246,7 @@ class ClassroomGRPOTrainer(Trainer):
 
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
-
+        
         if (
             self.state.global_step % self.args.logging_steps == 0
             and "wandb" in self.args.report_to
@@ -1063,16 +1265,81 @@ class ClassroomGRPOTrainer(Trainer):
 
             if wandb.run is not None and self.accelerator.is_main_process:
                 wandb.log({f"completions_{self._step}": wandb.Table(dataframe=df)})
-
+        """
         return {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
-            "advantages": advantages,
+            "token_advantages": token_level_advantages,  # NEW: (B, L) - 토큰별 advantage
+            "sequence_advantages": sequence_advantages,  # NEW: (B,) - 시퀀스별 평균 (로깅용)
             "old_per_token_logps": old_per_token_logps,
             "ref_per_token_logps": ref_per_token_logps,
         }
+
+    def _compute_token_level_grpo_loss(
+        self,
+        per_token_logps: torch.Tensor,  # (B, L)
+        old_per_token_logps: torch.Tensor,  # (B, L)
+        ref_per_token_logps: Optional[torch.Tensor],  # (B, L)
+        token_advantages: torch.Tensor,  # (B, L)
+        completion_mask: torch.Tensor,  # (B, L)
+        assistant_mask: torch.Tensor,  # (B, L)
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """
+        Token-level advantage를 사용한 GRPO loss 계산
+        
+        Args:
+            per_token_logps: 현재 policy의 per-token log probabilities
+            old_per_token_logps: 이전 policy의 per-token log probabilities
+            ref_per_token_logps: Reference model의 per-token log probabilities
+            token_advantages: Token-level advantages (각 토큰마다 다름!)
+            completion_mask: Padding mask
+            assistant_mask: Assistant turn mask
+            
+        Returns:
+            loss: scalar loss
+            metrics: dict of metric tensors
+        """
+        # Policy ratio
+        coef_1 = torch.exp(per_token_logps - old_per_token_logps)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon_high)
+        
+        # Token-level policy loss
+        per_token_loss1 = coef_1 * token_advantages
+        per_token_loss2 = coef_2 * token_advantages
+        per_token_policy_loss = -torch.min(per_token_loss1, per_token_loss2)
+        
+        # KL divergence (if using reference model)
+        if self.beta != 0.0 and ref_per_token_logps is not None:
+            per_token_kl = (
+                torch.exp(ref_per_token_logps - per_token_logps)
+                - (ref_per_token_logps - per_token_logps)
+                - 1
+            )
+            per_token_loss = per_token_policy_loss + self.beta * per_token_kl
+        else:
+            per_token_loss = per_token_policy_loss
+            per_token_kl = None
+        
+        # Apply masks
+        active_mask = completion_mask * assistant_mask
+        masked_loss = per_token_loss * active_mask
+        
+        # Average over active tokens
+        loss = masked_loss.sum() / active_mask.sum().clamp(min=1)
+        
+        # Metrics
+        metrics = {}
+        
+        if per_token_kl is not None:
+            metrics['kl'] = (per_token_kl * active_mask).sum() / active_mask.sum().clamp(min=1)
+        
+        # Clip ratio
+        is_clipped = (per_token_loss1 < per_token_loss2).float()
+        metrics['clip_ratio'] = (is_clipped * active_mask).sum() / active_mask.sum().clamp(min=1)
+        
+        return loss, metrics
 
     def compute_old_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
@@ -1108,8 +1375,9 @@ class ClassroomGRPOTrainer(Trainer):
                 - 1
             )
 
-        # Compute the loss
-        advantages = inputs["advantages"]
+        # NEW: Use token-level advantages!
+        token_advantages = inputs["token_advantages"][:, 1:]  # (B, L) -> (B, L-1) to match logits
+        
         # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's computation (see
         # _generate_and_score_completions) and use per_token_logps.detach() instead.
         old_per_token_logps = (
@@ -1119,9 +1387,12 @@ class ClassroomGRPOTrainer(Trainer):
         )
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
         coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon)
-        per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-        per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+        
+        # NEW: 각 토큰이 자신의 advantage를 사용!
+        per_token_loss1 = coef_1 * token_advantages  # (B, L) * (B, L)
+        per_token_loss2 = coef_2 * token_advantages  # (B, L) * (B, L)
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+        
         if self.beta != 0.0:
             per_token_loss = per_token_loss + self.beta * per_token_kl
 
@@ -1148,6 +1419,16 @@ class ClassroomGRPOTrainer(Trainer):
         self._metrics[mode]["clip_ratio"].append(
             self.accelerator.gather_for_metrics(clip_ratio).mean().item()
         )
+        
+        # NEW: Log sequence-level advantages for monitoring
+        sequence_advantages = inputs["sequence_advantages"]
+        self._metrics[mode]["advantage_mean"].append(
+            self.accelerator.gather_for_metrics(sequence_advantages.mean()).mean().item()
+        )
+        self._metrics[mode]["advantage_std"].append(
+            self.accelerator.gather_for_metrics(sequence_advantages.std()).mean().item()
+        )
+        
         torch.cuda.empty_cache()
         return loss
 
@@ -1159,11 +1440,13 @@ class ClassroomGRPOTrainer(Trainer):
             raise ValueError("The GRPOTrainer does not support returning outputs")
         torch.cuda.empty_cache()
 
+        # NEW: Always use token-level loss (not Liger)
         if not self.use_liger_loss:
             return self.compute_old_loss(
                 model, inputs, return_outputs, num_items_in_batch
             )
         
+        # Token-level GRPO loss with Liger-like optimizations
         completion_ids, completion_mask = (
             inputs["completion_ids"],
             inputs["completion_mask"],
@@ -1171,48 +1454,64 @@ class ClassroomGRPOTrainer(Trainer):
         input_ids = completion_ids
 
         attention_mask = (completion_ids != self.processing_class.pad_token_id).int()
-        completion_mask = completion_mask
+        completion_mask = completion_mask[:, 1:]  # Remove first token
         logits_to_keep = completion_ids.size(1) - 1
 
         # We mask with assistant loss too.
-        assistant_mask = self._compute_assistant_mask(completion_ids).int()
+        assistant_mask = self._compute_assistant_mask(completion_ids).int()[:, 1:]
 
-        # get the last hidden state of the model
-        last_hidden_state = self._get_last_hidden_state(
+        # Get per-token log probabilities
+        per_token_logps = self._get_per_token_logps(
             model, input_ids, attention_mask, logits_to_keep
         )
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-        with deepspeed.zero.GatheredParameters(
-            [unwrapped_model.lm_head.weight, unwrapped_model.lm_head.bias],
-            modifier_rank=None,
-        ):
-            # compute loss and metrics using liger grpo loss
-            loss, metrics = self._forward_redirection(
-                self.model,
-                unwrapped_model,
-                self.liger_grpo_loss,
-                last_hidden_state,
-                unwrapped_model.lm_head.weight,
-                completion_ids[:, 1:],
-                (completion_mask * assistant_mask)[:, 1:],
-                inputs["advantages"],
-                inputs["ref_per_token_logps"],
-                inputs["old_per_token_logps"],
-            )
-
-        # Extract metrics from the liger_grpo_loss output
-        # KL divergence is the first metric when beta is non-zero
-        mean_kl = metrics[0] if self.beta != 0.0 else None
-        clip_ratio = metrics[-1]
-        self.accelerator.wait_for_everyone()
-        mode = "train" if self.model.training else "eval"
+        
+        # Get reference log probabilities
         if self.beta != 0.0:
-            self._metrics[mode]["kl"].append(
-                self.accelerator.gather_for_metrics(mean_kl).mean().item()
-            )
-        self._metrics[mode]["clip_ratio"].append(
-            self.accelerator.gather_for_metrics(clip_ratio).mean().item()
+            ref_per_token_logps = inputs["ref_per_token_logps"]
+        else:
+            ref_per_token_logps = None
+        
+        # Get old log probabilities
+        old_per_token_logps = (
+            inputs["old_per_token_logps"]
+            if self.num_iterations > 1
+            else per_token_logps.detach()
         )
+        
+        # NEW: Get token-level advantages
+        token_advantages = inputs["token_advantages"][:, 1:]  # (B, L)
+        
+        # Compute token-level GRPO loss
+        loss, metrics = self._compute_token_level_grpo_loss(
+            per_token_logps=per_token_logps,
+            old_per_token_logps=old_per_token_logps,
+            ref_per_token_logps=ref_per_token_logps,
+            token_advantages=token_advantages,
+            completion_mask=completion_mask,
+            assistant_mask=assistant_mask,
+        )
+        
+        # Log metrics
+        mode = "train" if self.model.training else "eval"
+        
+        if 'kl' in metrics:
+            self._metrics[mode]["kl"].append(
+                self.accelerator.gather_for_metrics(metrics['kl']).mean().item()
+            )
+        
+        self._metrics[mode]["clip_ratio"].append(
+            self.accelerator.gather_for_metrics(metrics['clip_ratio']).mean().item()
+        )
+        
+        # NEW: Log advantages
+        sequence_advantages = inputs["sequence_advantages"]
+        self._metrics[mode]["advantage_mean"].append(
+            self.accelerator.gather_for_metrics(sequence_advantages.mean()).mean().item()
+        )
+        self._metrics[mode]["advantage_std"].append(
+            self.accelerator.gather_for_metrics(sequence_advantages.std()).mean().item()
+        )
+        
         return loss
 
     def log(self, logs: dict[str, float], start_time: Optional[float] = None) -> None:
