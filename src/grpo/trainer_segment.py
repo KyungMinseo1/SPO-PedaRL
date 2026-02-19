@@ -77,7 +77,7 @@ from trl.trainer.utils import (
 )
 from vllm import RequestOutput
 from src.utils.utils import incremental_state_dict
-from src.vllm.client import sample_conversations, wait_batch
+from src.vllm.client import sample_conversations, sample_nodes, wait_batch
 from src.utils.shared_memory import create_shared_state_dict, get_shareable_version
 from src.utils.utils import init_logger, _ForwardRedirection
 from src.grpo.config import ClassroomGRPOConfig
@@ -340,9 +340,37 @@ class ClassroomGRPOTrainer(Trainer):
         # Training arguments
         self.max_prompt_length = args.max_prompt_length
         self.max_completion_length = args.max_completion_length
-        # NOTE: num_generations = (( ((max_turns + 1) / 2) // max_group_size) + 1)^(branch_size)
-        # self.num_generations = args.num_generations
-        self.num_generations = (((args.max_turns + 1) // 2) // args.max_group_size + 1) ** args.branch_size
+        
+        # ===== 핵심 변경: num_generations = 총 노드 수 =====
+        # TreeNode 기반 학습에서는 각 노드가 하나의 "generation"
+        # 
+        # 계산 방법:
+        # Level 0: branch_size nodes
+        # Level 1: branch_size^2 nodes
+        # Level 2: branch_size^3 nodes
+        # Total: branch_size + branch_size^2 + branch_size^3
+        #      = branch_size * (1 + branch_size + branch_size^2)
+        #      = branch_size * (branch_size^levels - 1) / (branch_size - 1)
+        #
+        # levels = ((max_turns + 1) // 2) // max_group_size
+        
+        num_levels = ((args.max_turns + 1) // 2) // args.max_group_size
+        
+        if args.branch_size == 1:
+            # 분기 없음: 단순히 num_levels개 노드
+            self.num_generations = num_levels
+        else:
+            # 기하급수: sum_{i=1}^{num_levels} branch_size^i
+            self.num_generations = args.branch_size * (
+                (args.branch_size ** num_levels - 1) // (args.branch_size - 1)
+            )
+        
+        logger.info(
+            f"TreeNode-based learning: {num_levels} levels, "
+            f"branch_size={args.branch_size}, "
+            f"total nodes={self.num_generations}"
+        )
+        
         self.temperature = args.temperature
 
         # Multi-step
@@ -462,13 +490,38 @@ class ClassroomGRPOTrainer(Trainer):
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
     def _get_train_sampler(self) -> Sampler:
-
-        return RepeatRandomSampler(
-            data_source=self.train_dataset,
-            mini_repeat_count=self.num_generations,
-            batch_size=self.global_batch_size // self.num_generations,
-            repeat_count=self.num_iterations * self.args.gradient_accumulation_steps,
-            seed=self.args.seed,
+        """
+        TreeNode 기반 학습에서는 RepeatSampler 불필요
+        각 문제당 num_generations개 노드가 자동 생성되므로
+        단순히 문제를 순차적/랜덤으로 샘플링하면 됨
+        """
+        from torch.utils.data import RandomSampler
+        
+        # 기본 랜덤 샘플러
+        base_sampler = RandomSampler(
+            self.train_dataset,
+            replacement=False,
+            num_samples=None,
+        )
+        
+        # num_iterations만큼 재사용을 위한 wrapper
+        class RepeatingWrapper:
+            def __init__(self, base_sampler, repeat_count):
+                self.base_sampler = base_sampler
+                self.repeat_count = repeat_count
+            
+            def __iter__(self):
+                indices = list(self.base_sampler)
+                for _ in range(self.repeat_count):
+                    for idx in indices:
+                        yield idx
+            
+            def __len__(self):
+                return len(self.base_sampler) * self.repeat_count
+        
+        return RepeatingWrapper(
+            base_sampler,
+            repeat_count=self.num_iterations * self.args.gradient_accumulation_steps
         )
 
     def _enable_gradient_checkpointing(
@@ -497,19 +550,23 @@ class ClassroomGRPOTrainer(Trainer):
         return model
 
     ####################################################################################
-    # Map turn-pair advantages to token-level advantages
+    # Map node-level advantages to token-level advantages (TreeNode 기반)
     ####################################################################################
-    def _map_turn_pair_advantages_to_tokens(
+    def _map_node_advantages_to_tokens(
         self,
         completion_ids: torch.Tensor,  # (B, L)
-        turn_pair_advantages_list: List[List[Dict]],  # List[List[turn_pair_adv_dict]]
+        node_advantages_list: List[List[Dict]],  # List[List[node_turn_pair_adv_dict]]
     ) -> torch.Tensor:
         """
-        Turn pair별 advantage를 토큰 레벨로 매핑
+        Node별 advantage를 토큰 레벨로 매핑 (Context 없음! 각 node 독립!)
+        
+        각 sequence는 하나의 TreeNode의 turn pairs만 포함:
+        - max_group_size개의 turn pairs (예: 3개)
+        - 각 turn에 해당 turn의 combined_advantage 적용
         
         Args:
             completion_ids: (batch_size, seq_len)
-            turn_pair_advantages_list: 각 conversation의 turn pair advantages
+            node_advantages_list: 각 node의 turn pair advantages (3개)
         
         Returns:
             token_advantages: (batch_size, seq_len) - 각 토큰의 advantage
@@ -544,10 +601,9 @@ class ClassroomGRPOTrainer(Trainer):
         # 각 시퀀스에 대해 처리
         for batch_idx in range(batch_size):
             seq = completion_ids[batch_idx].tolist()
-            turn_pair_advs = turn_pair_advantages_list[batch_idx]
+            node_turn_pairs = node_advantages_list[batch_idx]
             
-            if not turn_pair_advs:
-                # turn pair advantages가 없으면 0으로 유지
+            if not node_turn_pairs:
                 continue
             
             # Assistant 턴의 시작/끝 위치 찾기
@@ -560,21 +616,24 @@ class ClassroomGRPOTrainer(Trainer):
                     seq, start_token, assistant_token, eos_token
                 )
             
-            # Turn pair와 매칭
-            if len(assistant_turn_spans) != len(turn_pair_advs):
+            # Context 없음! 노드의 turn pairs와 정확히 매칭되어야 함
+            num_node_turns = len(node_turn_pairs) # Number of turns in one node
+            num_assistant_turns = len(assistant_turn_spans) # Number of assistant turns in the node sequence
+            
+            if num_assistant_turns != num_node_turns:
                 logger.warning(
-                    f"Batch {batch_idx}: Assistant turns ({len(assistant_turn_spans)}) "
-                    f"!= turn pairs ({len(turn_pair_advs)}). Using fallback."
+                    f"Batch {batch_idx}: Assistant turns ({num_assistant_turns}) "
+                    f"!= node turns ({num_node_turns}). Using fallback."
                 )
-                # Fallback: 첫 번째 turn pair의 combined advantage를 전체에 적용
-                if turn_pair_advs:
-                    token_advantages[batch_idx, :] = turn_pair_advs[0]['combined_advantage']
+                # Fallback
+                if node_turn_pairs:
+                    token_advantages[batch_idx, :] = node_turn_pairs[0]['combined_advantage']
                 continue
             
             # 각 assistant 턴에 해당하는 advantage 할당
             for turn_idx, (start_pos, end_pos) in enumerate(assistant_turn_spans):
-                if turn_idx < len(turn_pair_advs):
-                    adv = turn_pair_advs[turn_idx]['combined_advantage']
+                if turn_idx < len(node_turn_pairs):
+                    adv = node_turn_pairs[turn_idx]['combined_advantage']
                     token_advantages[batch_idx, start_pos:end_pos] = adv
         
         return token_advantages
@@ -674,7 +733,7 @@ class ClassroomGRPOTrainer(Trainer):
                         tokens_in += 1
                     else:
                         mask.append(0)
-                print(f"Number of tokens in: {tokens_in}")
+                logger.debug(f"Number of assistant tokens in sequence: {tokens_in}")
                 return mask
 
             if input_ids.dim() == 1:
@@ -923,8 +982,10 @@ class ClassroomGRPOTrainer(Trainer):
         # We only generate on main processes
         if self.accelerator.is_local_main_process:
             logger.info(f"Entered with {len(all_prompts_text)} prompts")
-            ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
-            local_answers = answers[:: self.num_generations]
+            
+            # TreeNode 기반: 중복 없음! 그대로 사용
+            ordered_set_of_prompts = all_prompts_text
+            local_answers = answers
 
             num_prompts_per_node = len(ordered_set_of_prompts) // self.num_nodes
 
@@ -933,29 +994,29 @@ class ClassroomGRPOTrainer(Trainer):
             end_slice = (self.node_id + 1) * num_prompts_per_node
             ordered_set_of_prompts = ordered_set_of_prompts[start_slice:end_slice]
             local_answers = local_answers[start_slice:end_slice]
-            # we duplicate the answers by num_generations
-            real_answers = []
-            for answer in local_answers:
-                for _ in range(self.num_generations):
-                    real_answers.append(answer)
+            
+            # TreeNode 기반: answers도 중복 없음
+            real_answers = local_answers
 
             logger.info(
                 f"Generating completions for {len(ordered_set_of_prompts)} unique problems, with {self.num_generations} generations each and answers {real_answers}"
             )
 
-            all_outputs, all_turn_pair_advantages = sample_conversations(
+            # all_outputs: Per Node generation request outputs(sequence_text(tokenized), token_ids)
+            # all_node_advantages: Per Node advantage list(doubled list for each turn pair per node([[turn1, turn2], [turn3, turn4]]), with combined advantage)
+            all_outputs, all_node_advantages = sample_nodes(
                 ordered_set_of_prompts,
                 answers=real_answers,
                 meta=meta_info_shared,
                 server_port=self.server_port,
-                num_samples_per_problem=self.num_generations,
-                tokenizer=self.tokenizer,
+                tokenizer=self.processing_class,
             )
-            logger.info(f"Generated completions for {len(all_outputs)} prompts")
+            logger.info(f"Generated {len(all_outputs)} nodes from {len(ordered_set_of_prompts)} problems")
 
             expected_count = len(ordered_set_of_prompts) * self.num_generations
             actual_count = len(all_outputs)
 
+            # Actual count might differ from expected count due to early stopping in conversations.
             if actual_count != expected_count:
                 logger.warning(
                     f"Expected {expected_count} outputs, but got {actual_count}. This might lead to issues in training."
@@ -963,12 +1024,12 @@ class ClassroomGRPOTrainer(Trainer):
                 if actual_count > expected_count:
                     logger.info(f"Truncating to {expected_count} conversations")
                     all_outputs = all_outputs[:expected_count]
-                    all_turn_pair_advantages = all_turn_pair_advantages[:expected_count]
+                    all_node_advantages = all_node_advantages[:expected_count]
                 elif actual_count < expected_count:
-                    logger.info(f"Padding to {expected_count} conversations")
+                    logger.info(f"Padding to {expected_count} nodes")
                     padding_count = expected_count - actual_count
                     all_outputs.extend([all_outputs[-1]] * padding_count)
-                    all_turn_pair_advantages.extend([all_turn_pair_advantages[-1]] * padding_count)
+                    all_node_advantages.extend([all_node_advantages[-1]] * padding_count)
 
             if self.use_experimental_shared_memory:
                 logger.info("Closing the shared memory")
@@ -979,7 +1040,7 @@ class ClassroomGRPOTrainer(Trainer):
                     shm.unlink()
         else:
             all_outputs = []
-            all_turn_pair_advantages = []
+            all_node_advantages = []
             if self.use_experimental_shared_memory:
                 logger.info("Deleting state_dict memory")
                 try:
@@ -1011,8 +1072,8 @@ class ClassroomGRPOTrainer(Trainer):
         self.accelerator.wait_for_everyone()
         all_outputs_ = gather_object(all_outputs)
         all_outputs = all_outputs_
-        all_turn_pair_advantages_ = gather_object(all_turn_pair_advantages)
-        all_turn_pair_advantages = all_turn_pair_advantages_
+        all_node_advantages_ = gather_object(all_node_advantages)
+        all_node_advantages = all_node_advantages_
 
         all_inputs = inputs
         all_prompts = prompts
@@ -1026,7 +1087,7 @@ class ClassroomGRPOTrainer(Trainer):
         logger.info(f"Start slice: {start_slice}, Step size: {step_size}")
 
         outputs = all_outputs[start_slice : start_slice + step_size]
-        turn_pair_advantages_from_tree = all_turn_pair_advantages[start_slice : start_slice + step_size]
+        node_advantages = all_node_advantages[start_slice : start_slice + step_size]
         prompts = prompts[start_slice : start_slice + step_size]
         prompts_text = prompts_text[start_slice : start_slice + step_size]
         prompt_ids = prompt_ids[start_slice : start_slice + step_size]
@@ -1038,6 +1099,7 @@ class ClassroomGRPOTrainer(Trainer):
         completion_ids = pad(
             completion_ids, padding_value=self.processing_class.pad_token_id
         )
+        # prompt_completion_ids: tensored token ids for generated sequences
         prompt_completion_ids = completion_ids
 
         # TODO: Technically problematic if pad_token_id is equal to eos_token_id.
@@ -1090,11 +1152,11 @@ class ClassroomGRPOTrainer(Trainer):
         )
         completions = completions_text
 
-        # NEW: Turn pair별 advantage를 토큰 레벨로 매핑!
-        logger.info("Mapping turn-pair advantages to token-level advantages")
-        token_level_advantages = self._map_turn_pair_advantages_to_tokens(
+        # NEW: Node별 advantage를 토큰 레벨로 매핑!
+        logger.info("Mapping node-level advantages to token-level advantages")
+        token_level_advantages = self._map_node_advantages_to_tokens(
             completion_ids,
-            turn_pair_advantages_from_tree
+            node_advantages  # 각 node의 turn pair advantages
         )  # (batch_size, seq_len)
         
         # Assistant mask 적용하여 최종 advantage 계산
@@ -1134,92 +1196,6 @@ class ClassroomGRPOTrainer(Trainer):
                 # 토큰 레벨에도 반영
                 token_level_advantages = token_level_advantages / (adv_grouped_std.unsqueeze(1) + 1e-4)
 
-        """
-        rewards_per_func = torch.zeros(
-            len(prompts), len(self.reward_funcs), device=device
-        )
-        if self.num_nodes == 1:
-            for i, reward_func in enumerate(self.reward_funcs):
-                keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
-                reward_kwargs = {
-                    key: [example[key] for example in inputs] for key in keys
-                }
-                output_reward_func = reward_func(
-                    prompts=prompts, completions=completions, **reward_kwargs
-                )
-                rewards_per_func[:, i] = torch.tensor(
-                    output_reward_func, dtype=torch.float32, device=device
-                )
-        else:
-            # We check in which node this problem is.
-            num_completions_per_node = len(all_outputs) // self.num_nodes
-
-            rewards_per_func = torch.zeros(
-                num_completions_per_node, len(self.reward_funcs), device=device
-            )
-            if not self.accelerator.is_local_main_process:
-                rewards_per_func = (
-                    torch.ones(
-                        num_completions_per_node, len(self.reward_funcs), device=device
-                    )
-                    * -199
-                )
-            else:
-
-                start_slice = self.node_id * num_completions_per_node
-                end_slice = (self.node_id + 1) * num_completions_per_node
-
-                for i, reward_func in enumerate(self.reward_funcs):
-                    keys = [
-                        key
-                        for key in all_inputs[start_slice:end_slice][0]
-                        if key not in ["prompt", "completion"]
-                    ]
-                    reward_kwargs = {
-                        key: [
-                            example[key]
-                            for example in all_inputs[start_slice:end_slice]
-                        ]
-                        for key in keys
-                    }
-                    output_reward_func = reward_func(
-                        prompts=all_prompts[start_slice:end_slice],
-                        completions=all_completions_text[start_slice:end_slice],
-                        **reward_kwargs,
-                    )
-                    rewards_per_func[:, i] = torch.tensor(
-                        output_reward_func, dtype=torch.float32, device=device
-                    )
-
-        rewards_per_func = gather(rewards_per_func)
-
-        rewards_per_func = rewards_per_func[(rewards_per_func != -199).any(dim=1)]
-
-        rewards = (rewards_per_func).sum(dim=1)
-
-        # Compute grouped-wise rewards
-        mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
-        std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
-
-        # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(
-            self.num_generations, dim=0
-        )
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(
-            self.num_generations, dim=0
-        )
-        advantages = rewards - mean_grouped_rewards
-        if self.args.scale_rewards:
-            advantages = advantages / (std_grouped_rewards + 1e-4)
-        """
-
-        # Slice to keep only the local part of the data
-        process_slice = slice(
-            self.accelerator.process_index * len(prompts),
-            (self.accelerator.process_index + 1) * len(prompts),
-        )
-        advantages = advantages[process_slice]
-
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
 
@@ -1231,41 +1207,36 @@ class ClassroomGRPOTrainer(Trainer):
         )
         self._metrics[mode]["completion_length"].append(completion_length)
 
-        """
-        reward_per_func = rewards_per_func.mean(0)
-        for i, reward_func in enumerate(self.reward_funcs):
-            if isinstance(
-                reward_func, nn.Module
-            ):  # Module instead of PretrainedModel for compat with compiled models
-                reward_func_name = reward_func.config._name_or_path.split("/")[-1]
-            else:
-                reward_func_name = reward_func.__name__
-            self._metrics[mode][f"rewards/{reward_func_name}"].append(
-                reward_per_func[i].item()
-            )
+        # Per-reward advantage logging (turn-pair level breakdown)
+        all_accuracy_advs = []
+        all_pedagogical_advs = []
+        all_length_advs = []
+        all_end_of_conv_advs = []
+        all_combined_advs = []
 
-        self._metrics[mode]["reward"].append(rewards.mean().item())
-        self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
-        
-        if (
-            self.state.global_step % self.args.logging_steps == 0
-            and "wandb" in self.args.report_to
-        ):
-            import pandas as pd
+        for node_turn_pairs in node_advantages:
+            for turn in node_turn_pairs:
+                all_accuracy_advs.append(turn.get("accuracy_advantage", 0.0))
+                all_pedagogical_advs.append(turn.get("pedagogical_advantage", 0.0))
+                all_length_advs.append(turn.get("length_advantage", 0.0))
+                all_end_of_conv_advs.append(turn.get("end_of_conversation_advantage", 0.0))
+                all_combined_advs.append(turn.get("combined_advantage", 0.0))
 
-            # For logging
-            table = {
-                "prompt": gather_object(prompts_text),
-                "completion": gather_object(completions_text),
-                "answer": gather_object([x["answer"] for x in inputs]),
-                "reward": rewards.tolist(),
-            }
+        def _safe_mean(lst):
+            return sum(lst) / len(lst) if lst else 0.0
 
-            df = pd.DataFrame(table)
+        self._metrics[mode]["accuracy_advantage_mean"].append(_safe_mean(all_accuracy_advs))
+        self._metrics[mode]["pedagogical_advantage_mean"].append(_safe_mean(all_pedagogical_advs))
+        self._metrics[mode]["length_advantage_mean"].append(_safe_mean(all_length_advs))
+        self._metrics[mode]["end_of_conv_advantage_mean"].append(_safe_mean(all_end_of_conv_advs))
+        self._metrics[mode]["combined_advantage_mean"].append(_safe_mean(all_combined_advs))
 
-            if wandb.run is not None and self.accelerator.is_main_process:
-                wandb.log({f"completions_{self._step}": wandb.Table(dataframe=df)})
-        """
+        # Ratio of tokens actually receiving a non-zero advantage signal
+        nonzero_ratio = (token_level_advantages.abs() > 1e-6).float().sum() / token_level_advantages.numel()
+        self._metrics[mode]["nonzero_advantage_ratio"].append(
+            self.accelerator.gather_for_metrics(nonzero_ratio).mean().item()
+        )
+
         return {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,

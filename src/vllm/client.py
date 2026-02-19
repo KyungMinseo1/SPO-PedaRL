@@ -10,48 +10,56 @@ from transformers import PreTrainedTokenizer
 ####################################################################################################
 
 
-def sample_conversations(
+def sample_nodes(
     problems: List[str],
     answers: List[str],
     meta: dict = {},
     server_port: int = 8000,
-    num_samples_per_problem: int = 1,
     tokenizer: PreTrainedTokenizer = None,
 ):
     """
+    TreeNode 단위로 샘플링 (NEW!)
+    
     Returns:
-        request_outputs: List[RequestOutput]
-        turn_pair_advantages_list: List[List[Dict]]  # NEW! Each conversation has a list of turn pair advantages
+        request_outputs: List[RequestOutput] - 각 TreeNode = 1 sequence
+        node_advantages_list: List[List[Dict]] - 각 node의 turn pair advantages
     """
 
-    server_url = f"http://localhost:{server_port}/sample_conversations"
+    server_url = f"http://localhost:{server_port}/sample_nodes"
     
-    # NOTE: We should expand trees based on one problems sample -> discard repeating problems and answers for num_samples_per_problem times.
-    actual_problems = problems
-    answers = [str(answer) for answer in answers]
     response = requests.post(
-        server_url, json={"problems": actual_problems, "meta": meta, "answers": answers}
+        server_url, json={"problems": problems, "meta": meta, "answers": answers}
     )
     response.raise_for_status()
 
     response_dict = response.json()
-    conversations = response_dict["conversations"]
+    nodes = response_dict["nodes"]
 
     request_outputs = []
-    turn_pair_advantages_list = []  # NEW!
+    node_advantages_list = []
 
-    for conv_data in conversations:
-        messages = conv_data["messages"]
-        turn_pair_advs = conv_data.get("turn_pair_advantages", [])  # NEW!
+    for node_data in nodes:
+        # Context 없음! 오직 현재 노드의 turn pairs만!
+        node_turn_pairs = node_data["node_turn_pairs"]
+        
+        # 이 노드의 메시지만 구성 (context 제외)
+        messages = []
+        for turn in node_turn_pairs:
+            messages.append(turn["student_message"])
+            messages.append(turn["teacher_message"])
+        
+        # Tokenize
+        sequence_text = tokenizer.apply_chat_template(messages, tokenize=False)
+        token_ids = tokenizer.apply_chat_template(messages, tokenize=True)
         
         request_output = RequestOutput(
-            request_id=conv_data["conversation_id"],
+            request_id=f"node_{node_data['node_id']}",
             prompt="",
             outputs=[
                 CompletionOutput(
                     index=0,
-                    text=tokenizer.apply_chat_template(messages, tokenize=False),
-                    token_ids=tokenizer.apply_chat_template(messages, tokenize=True),
+                    text=sequence_text,
+                    token_ids=token_ids,
                     cumulative_logprob=0.0,
                     logprobs=[],
                 )
@@ -61,9 +69,31 @@ def sample_conversations(
             finished=True,
         )
         request_outputs.append(request_output)
-        turn_pair_advantages_list.append(turn_pair_advs)  # NEW!
+        node_advantages_list.append(node_turn_pairs)
     
-    return request_outputs, turn_pair_advantages_list  # CHANGED!
+    return request_outputs, node_advantages_list
+
+
+def sample_conversations(
+    problems: List[str],
+    answers: List[str],
+    meta: dict = {},
+    server_port: int = 8000,
+    num_samples_per_problem: int = 1,
+    tokenizer: PreTrainedTokenizer = None,
+):
+    """
+    DEPRECATED: Use sample_nodes instead.
+    Kept for backward compatibility.
+    """
+    # Redirect to sample_nodes
+    return sample_nodes(
+        problems=problems,
+        answers=answers,
+        meta=meta,
+        server_port=server_port,
+        tokenizer=tokenizer,
+    )
 
 
 def get_end_rm_reward(

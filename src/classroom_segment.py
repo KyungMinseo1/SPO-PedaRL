@@ -179,7 +179,7 @@ class Conversation:
             self.state = ConversationState.STUDENT_TURN
 
     def copy(self):
-        """Conversation 복사 (branching용) - MODIFIED"""
+        """Conversation 복사 (branching용)"""
         new_conv = Conversation(
             problem_idx=self.problem_idx,
             problem=self.problem,
@@ -685,7 +685,7 @@ class Conversation:
             return 0.0
 
         return (
-            0.1
+            1.0
             if any(
                 "<end_of_conversation>" in message["content"]
                 for message in self.conversation
@@ -777,12 +777,13 @@ class Classroom:
         model_save_path: str,
         log_file_path: str = None,
     ):
-
         self.student_model_cfg = student_model_cfg
         self.teacher_model_cfg = teacher_model_cfg
         self.judge_model_cfg = judge_model_cfg
         self.reward_model_cfg = reward_model_cfg
         self.generation_cfg = generation_cfg
+
+        self.tokenizer = get_tokenizer(generation_cfg.tokenizer_to_use)
 
         if self.teacher_model_cfg.use_openrouter:
             self.teacher_model = OpenRouterInference(
@@ -1363,22 +1364,31 @@ class Classroom:
             all_prompts = []
             all_answers = []
             lengths = []
+
+            logger.info(f"Preparing solutions for reward computation.")
             for conv in reward_convs:
                 prompts = conv.get_solutions_for_reward()
                 lengths.append(len(prompts))
                 all_prompts.extend(prompts)
                 all_answers.extend([conv.answer] * len(prompts))
             rewards = self._compute_rewards_from_prompts(all_prompts, all_answers) if original_prompts else self._compute_constructivist_rewards_from_prompts(all_prompts, all_answers)
+            
+            logger.info(f"Computed rewards for {len(all_prompts)} solutions. Assigning accuracy/end_of_conversation rewards to conversations.")
             for conv in reward_convs:
-                curr_len = lengths.pop(0)
+                curr_len = lengths.pop(0) # Current number of solutions for each conversation
                 conv_rewards = rewards[:curr_len]
                 conv.add_accuracy_rewards(conv_rewards)
                 rewards = rewards[curr_len:]
 
                 # NOTE: Add accuracy reward to tree as well for later use.
                 accuracy_reward = conv.get_accuracy_reward()
+                end_of_conversation_reward = conv.get_end_of_conversation_reward()
                 tree = self.conversation_trees[conv.problem_idx]
-                tree.assing_reward_to_conversation(conv.current_node_id, accuracy_reward)
+                tree.assign_accuracy_reward_to_conversation(conv.current_node_id, accuracy_reward)
+                tree.assign_end_of_conversation_reward_to_conversation(conv.current_node_id, end_of_conversation_reward)
+
+        logger.info(f"Computing length rewards for all turn pairs.")
+        self.get_length_reward_on_tree()
 
         logger.info(f"Took {time.time() - start_time} seconds.")
         # Free memory
@@ -1548,6 +1558,30 @@ class Classroom:
         
         logger.info("Pedagogical judges completed")
 
+    def get_length_reward_on_tree(self):
+        texts = []
+
+        # Compute length reward for all turn pairs from all trees
+        for problem_idx, tree in self.conversation_trees.items():
+            for node_id, node in tree.nodes.items():
+                # Skip virtual root (no turn pairs)
+                if not node.turn_pairs:
+                    continue
+                
+                for turn_idx, turn_pair in enumerate(node.turn_pairs):
+                    texts.append((problem_idx, node_id, turn_idx, turn_pair.teacher_message["content"]))
+
+        text_tokens_count = [len(self.tokenizer.encode(t[3])) for t in texts]
+
+        def length_reward(tokens_count):
+            return -1.0 if tokens_count >= self.generation_cfg.max_tokens_per_turn - 1 else 0.0
+
+        for (problem_idx, node_id, turn_idx, _), tokens_count in zip(texts, text_tokens_count):
+            turn_pair = self.conversation_trees[problem_idx].nodes[node_id].turn_pairs[turn_idx]
+            turn_pair.length_reward = length_reward(tokens_count)
+        
+        logger.info(f"Length rewards computed for all {len(texts)} turn pairs in the tree")
+
     def _hide_thinking(self, content: str):
         # We remove everything between <think> and </think>
         return re.sub(r"<think>.*?</think>", "", content, flags=re.S).replace(
@@ -1618,7 +1652,9 @@ class Classroom:
 
     def compute_all_advantages(
         self,
-        lambda_pedagogical: float = 1.0
+        lambda_pedagogical: float = 1.0,
+        reward_list: List[str] = [],
+        reward_weights: List[float] = []
     ) -> Dict[int, Dict[str, float]]:
         """모든 Tree의 advantages 계산 - TURN PAIR 레벨로!"""
         logger.info("Computing turn-pair-level advantages for all trees")
@@ -1633,10 +1669,12 @@ class Classroom:
             tree.build_levels()
             tree.compute_v_values()
             tree.compute_accuracy_advantages()
+            tree.compute_end_of_conversation_advantages()
             tree.compute_pedagogical_advantages()
+            tree.compute_length_advantages()
             
             # Turn pair에 advantage 할당
-            tree.assign_advantages_to_turn_pairs(lambda_pedagogical)
+            tree.assign_advantages_to_turn_pairs(lambda_pedagogical, reward_list, reward_weights)
             
             # Node-level advantages (backward compatibility)
             node_advantages = tree.get_all_advantages()

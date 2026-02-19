@@ -13,10 +13,14 @@ from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from peft import LoraConfig as PeftLoraConfig
 from datasets import Dataset
-# from src.grpo.config import ClassroomGRPOConfig
-from src.gdpo.config import ClassroomGDPOConfig
+
+from src.grpo.config import ClassroomGRPOConfig
+# from src.gdpo.config import ClassroomGDPOConfig
+
 # from src.grpo.trainer import ClassroomGRPOTrainer
-from src.gdpo.trainer import ClassroomGDPOTrainer
+# from src.gdpo.trainer import ClassroomGDPOTrainer
+from src.grpo.trainer_segment import ClassroomGRPOTrainer
+
 from src.utils.utils import (
     construct_end_of_conversation_reward_func,
     construct_accuracy_reward_func,
@@ -60,6 +64,7 @@ def main(cfg: RLModelTrainingConfig):
 
     assert len(train_config.reward_list) == len(train_config.reward_weights), "Your presented reward list & reward weights have different size. Please check your reward list again."
 
+    # TODO: Should change Reward Dictionary
     reward_dict = {
         "accuracy": construct_accuracy_reward_func(cfg.generation.server_port),
         "pedagogical alignment": construct_pedagogical_alignment_reward_func(cfg.generation.server_port),
@@ -91,7 +96,7 @@ def main(cfg: RLModelTrainingConfig):
     model_kwargs = dict(
         trust_remote_code=True,
         attn_implementation="sdpa",
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         use_cache=False if train_config.gradient_checkpointing else True,
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -134,13 +139,13 @@ def main(cfg: RLModelTrainingConfig):
     # Training
     #############################################################################
 
-    # trainer = ClassroomGRPOTrainer(
-    trainer = ClassroomGDPOTrainer(
+    trainer = ClassroomGRPOTrainer(
+    # trainer = ClassroomGDPOTrainer(
         model=model_config.model_name_or_path,
         reward_funcs=reward_func_list,
-        reward_weights=train_config.reward_weights,
-        # args=ClassroomGRPOConfig(
-        args=ClassroomGDPOConfig(
+        # reward_weights=train_config.reward_weights,
+        args=ClassroomGRPOConfig(
+        # args=ClassroomGDPOConfig(
             gradient_accumulation_steps=cfg.train.num_samples_per_problem
             * cfg.train.number_of_problems_per_batch
             // cfg.train.per_device_train_batch_size
