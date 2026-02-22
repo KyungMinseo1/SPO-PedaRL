@@ -21,9 +21,7 @@ Assess the response based on the following criteria:
 
 ### Example – OK (Scaffolded Hints Provided)
 - Student: How do I find the area of a triangle with base 8 cm and height 5 cm?
-- Teacher: Do you remember a formula that relates a triangle’s base and height to its area?
-- Student: Is it base times height?
-- Teacher: You’re close. What operation is usually applied to that product for triangles?
+- Teacher: Do you remember a formula that relates a triangle’s base and height to its area? What operation is usually applied for triangles?
 {
   "reasoning": "The teacher offers step-by-step hints through targeted questions, gradually supporting the student’s understanding without directly explaining the solution process.",
   "decision": "OK"

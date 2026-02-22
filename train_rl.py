@@ -5,6 +5,7 @@ import os
 import hydra
 import wandb
 import torch
+import math
 from omegaconf import OmegaConf
 from hydra.core.config_store import ConfigStore
 from config.train_rl_model import RLModelTrainingConfig
@@ -14,18 +15,19 @@ from transformers import AutoTokenizer
 from peft import LoraConfig as PeftLoraConfig
 from datasets import Dataset
 
-from src.grpo.config import ClassroomGRPOConfig
+# from src.grpo.config import ClassroomGRPOConfig
 # from src.gdpo.config import ClassroomGDPOConfig
+from src.grpo.config_segment import ClassroomSPOConfig
 
 # from src.grpo.trainer import ClassroomGRPOTrainer
 # from src.gdpo.trainer import ClassroomGDPOTrainer
-from src.grpo.trainer_segment import ClassroomGRPOTrainer
+from src.grpo.trainer_segment import ClassroomSPOTrainer
 
 from src.utils.utils import (
     construct_end_of_conversation_reward_func,
     construct_accuracy_reward_func,
     construct_pedagogical_alignment_reward_func,
-    construct_end_rm_reward_func,
+    # construct_end_rm_reward_func,
     construct_length_reward_func,
     construct_thinking_reward_func,
     init_logger,
@@ -65,6 +67,7 @@ def main(cfg: RLModelTrainingConfig):
     assert len(train_config.reward_list) == len(train_config.reward_weights), "Your presented reward list & reward weights have different size. Please check your reward list again."
 
     # TODO: Should change Reward Dictionary
+    """
     reward_dict = {
         "accuracy": construct_accuracy_reward_func(cfg.generation.server_port),
         "pedagogical alignment": construct_pedagogical_alignment_reward_func(cfg.generation.server_port),
@@ -77,6 +80,7 @@ def main(cfg: RLModelTrainingConfig):
         for reward_name in train_config.reward_list
         if reward_dict.get(reward_name, None) is not None
     ]
+    """
 
     kwargs = [InitProcessGroupKwargs(timeout=timedelta(hours=10))]
     accelerator = Accelerator(kwargs_handlers=kwargs)
@@ -136,22 +140,53 @@ def main(cfg: RLModelTrainingConfig):
         )
 
     #############################################################################
+    # Initializing num_generations
+    #############################################################################
+
+        # For TreeNode, each node is one "generation"
+        #
+        # Level 0: branch_size nodes
+        # Level 1: branch_size^2 nodes
+        # Level 2: branch_size^3 nodes
+        # Total: branch_size + branch_size^2 + branch_size^3
+        #      = branch_size * (1 + branch_size + branch_size^2)
+        #      = branch_size * (branch_size^levels - 1) / (branch_size - 1)
+        #
+        # levels = ceil(((max_turns + 1) // 2) / max_group_size)
+
+    max_turns = cfg.generation.max_turns
+    max_group_size = cfg.generation.max_group_size
+    branch_size = cfg.generation.branch_size
+    num_levels = math.ceil((max_turns + 1) / 2 / max_group_size)
+    if branch_size == 1:
+        spo_num_generations = num_levels  # Degenerate case: a single chain of generations
+    else:
+        spo_num_generations = branch_size * ((branch_size**num_levels - 1) // (branch_size - 1))
+
+    logger.info(
+        f"TreeNode-based learning: {num_levels} levels, "
+        f"branch_size={branch_size}, "
+        f"total maximum nodes={spo_num_generations}"
+    )
+
+    #############################################################################
     # Training
     #############################################################################
 
-    trainer = ClassroomGRPOTrainer(
+    trainer = ClassroomSPOTrainer(
     # trainer = ClassroomGDPOTrainer(
         model=model_config.model_name_or_path,
-        reward_funcs=reward_func_list,
+        # reward_funcs=reward_func_list,
         # reward_weights=train_config.reward_weights,
-        args=ClassroomGRPOConfig(
+        # NOTE: # Using SPO makes auto num_generations calculation possible, which is more convenient for training with tree nodes.
+        args=ClassroomSPOConfig(
         # args=ClassroomGDPOConfig(
-            gradient_accumulation_steps=cfg.train.num_samples_per_problem
+            gradient_accumulation_steps=math.ceil(spo_num_generations
             * cfg.train.number_of_problems_per_batch
-            // cfg.train.per_device_train_batch_size
-            // accelerator.num_processes,
+            / cfg.train.per_device_train_batch_size
+            / accelerator.num_processes),
+            num_generations=spo_num_generations,
             gradient_checkpointing=train_config.gradient_checkpointing,
-            num_generations=cfg.train.num_samples_per_problem,
             per_device_train_batch_size=cfg.train.per_device_train_batch_size,
             num_iterations=cfg.train.mu,
             epsilon=cfg.train.epsilon,

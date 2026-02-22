@@ -5,7 +5,7 @@
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from classroom_segment import JudgeResponse
+from src.classroom_segment import JudgeResponse
 
 
 @dataclass
@@ -319,23 +319,18 @@ class ConversationTree:
     
     def assign_advantages_to_turn_pairs(
             self,
-            lambda_pedagogical: float = 1.0,
+            # lambda_pedagogical: float = 1.0,
             reward_list: List[str] = [],
             reward_weights: List[float] = []
         ):
         """
-        각 turn pair에 accuracy advantage와 combined advantage 할당
-        
-        Args:
-            lambda_pedagogical: pedagogical advantage의 가중치
+        Allocate combined advantage to each turn pair
         """
         for node in self.nodes.values():
             for turn in node.turn_pairs:
-                # Accuracy advantage는 노드의 값을 사용
                 turn.accuracy_advantage = node.accuracy_advantage if node.accuracy_advantage is not None else 0.0
                 turn.end_of_conversation_advantage = node.end_of_conversation_advantage if node.end_of_conversation_advantage is not None else 0.0
 
-                # Pedagogical advantage는 이미 turn별로 계산됨
                 if turn.pedagogical_advantage is None:
                     turn.pedagogical_advantage = 0.0
                 if turn.length_advantage is None:
@@ -344,7 +339,7 @@ class ConversationTree:
                 # TODO: Should add thinking advantage as well (turn or node level)
                 advantage_dict = {
                     "accuracy": turn.accuracy_advantage,
-                    "pedagogical": turn.pedagogical_advantage,
+                    "pedagogical_alignment": turn.pedagogical_advantage,
                     "end_of_conversation": turn.end_of_conversation_advantage,
                     "length": turn.length_advantage
                 }
@@ -434,6 +429,7 @@ class ConversationTree:
                     'student_message': turn.student_message,
                     'teacher_message': turn.teacher_message,
                     'pedagogical_reward': turn.pedagogical_reward if turn.pedagogical_reward is not None else 0.0,
+                    'length_reward': turn.length_reward if turn.length_reward is not None else 0.0,
                     'accuracy_advantage': turn.accuracy_advantage if turn.accuracy_advantage is not None else 0.0,
                     'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
                     'end_of_conversation_advantage': turn.end_of_conversation_advantage if turn.end_of_conversation_advantage is not None else 0.0,

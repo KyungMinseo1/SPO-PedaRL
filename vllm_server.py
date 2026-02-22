@@ -1,6 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 import wandb
 import hydra
 import uvicorn
@@ -60,38 +60,34 @@ def sample_nodes(request: ConversationSampleRequest):
     meta = request.meta
     
     with lock:
-        # Conversations 샘플링 (Tree 생성)
+        # Conversations sampling
         conversations = classroom.sample_conversations(
             problems=problems,
             answers=answers,
             meta=meta
         )
-        
-        # Advantages 계산 (turn pair 레벨!)
-        lambda_pedagogical = getattr(config, 'pedagogical_advantage_lambda', 1.0)
-        reward_list = getattr(config, 'reward_list', [])
-        reward_weights = getattr(config, 'reward_weights', [])
+
+        # Compute advantages for all nodes in the sampled conversations
+        # lambda_pedagogical = getattr(config, 'pedagogical_advantage_lambda', 1.0)
+        reward_list = config.train.reward_list
+        reward_weights = config.train.reward_weights
         
         node_advantages = classroom.compute_all_advantages(
-            lambda_pedagogical=lambda_pedagogical,
+            # lambda_pedagogical=lambda_pedagogical,
             reward_list=reward_list,
             reward_weights=reward_weights
         ) # Per Node(grouped turn)
-    
-    # ===== 핵심 변경: Node 단위로 반환 (Context 없음!) =====
-    # Trees는 classroom에 이미 저장되어 있음
+
+    # Using stored trees from classroom class
     all_nodes = []
     
     for problem_idx, tree in classroom.conversation_trees.items():
-        # 모든 노드를 context 없이 추출!
         nodes_for_training = tree.get_all_nodes_for_training()
         all_nodes.extend(nodes_for_training)
     
     logger.info(f"Returning {len(all_nodes)} nodes from {len(problems)} problems (no context)")
-    
-    # WandB 로깅용 데이터 수집
+
     if config.logging.wandb:
-        # Node별 메트릭 수집
         node_metrics = []
         for node_data in all_nodes:
             for turn_adv in node_data["node_turn_pairs"]:
@@ -107,7 +103,7 @@ def sample_nodes(request: ConversationSampleRequest):
                     "combined_advantage": turn_adv["combined_advantage"],
                 })
         
-        # DataFrame으로 변환하여 로깅
+        # DataFrame for logging node metrics to Weights & Biases
         if node_metrics:
             import pandas as pd
             df_nodes = pd.DataFrame(node_metrics)
@@ -115,10 +111,6 @@ def sample_nodes(request: ConversationSampleRequest):
             wandb.log({
                 f"nodes_batch_{len(classroom.conversation_sets)}": wandb.Table(dataframe=df_nodes)
             })
-        
-        # NOTE: Conversation-level 로깅 제거
-        # Node-level 메트릭이 더 정확하고 유용함
-        # Conversations는 이제 학습에 사용되지 않음
     
     return {
         "nodes": all_nodes,
@@ -127,6 +119,7 @@ def sample_nodes(request: ConversationSampleRequest):
     }
 
 
+# TODO: 이제 사용 안되기 때문에 tree에서 직접 reward 추출 형식으로 변형해야 함
 @app.post("/get_end_rm_reward")
 def get_end_rm_reward(request: RewardRequest):
     global classroom

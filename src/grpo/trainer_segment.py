@@ -80,7 +80,7 @@ from src.utils.utils import incremental_state_dict
 from src.vllm.client import sample_conversations, sample_nodes, wait_batch
 from src.utils.shared_memory import create_shared_state_dict, get_shareable_version
 from src.utils.utils import init_logger, _ForwardRedirection
-from src.grpo.config import ClassroomGRPOConfig
+from src.grpo.config_segment import ClassroomSPOConfig
 
 logger = init_logger()
 
@@ -231,15 +231,15 @@ def split_tensor_dict(
     ]
 
 
-class ClassroomGRPOTrainer(Trainer):
+class ClassroomSPOTrainer(Trainer):
 
-    _tag_names = ["trl", "grpo"]
+    _tag_names = ["trl", "spo"]
 
     def __init__(
         self,
         model: str,
-        reward_funcs: Union[RewardFunc, list[RewardFunc]],
-        args: ClassroomGRPOConfig = None,
+        # reward_funcs: Union[RewardFunc, list[RewardFunc]],
+        args: ClassroomSPOConfig = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
         processing_class: Optional[PreTrainedTokenizerBase] = None,
         callbacks: Optional[list[TrainerCallback]] = None,
@@ -276,7 +276,7 @@ class ClassroomGRPOTrainer(Trainer):
         if args is None:
             model_name = model if isinstance(model, str) else model.config._name_or_path
             model_name = model_name.split("/")[-1]
-            args = ClassroomGRPOConfig(f"{model_name}-GRPO")
+            args = ClassroomSPOConfig(f"{model_name}-GRPO")
 
         ################################################################################
         # Model loading
@@ -332,7 +332,7 @@ class ClassroomGRPOTrainer(Trainer):
         ################################################################################
         # Final setups
         ################################################################################
-        self.reward_funcs = reward_funcs
+        # self.reward_funcs = reward_funcs
 
         def data_collator(features):  # No data collation is needed in GRPO
             return features
@@ -340,36 +340,8 @@ class ClassroomGRPOTrainer(Trainer):
         # Training arguments
         self.max_prompt_length = args.max_prompt_length
         self.max_completion_length = args.max_completion_length
-        
-        # ===== 핵심 변경: num_generations = 총 노드 수 =====
-        # TreeNode 기반 학습에서는 각 노드가 하나의 "generation"
-        # 
-        # 계산 방법:
-        # Level 0: branch_size nodes
-        # Level 1: branch_size^2 nodes
-        # Level 2: branch_size^3 nodes
-        # Total: branch_size + branch_size^2 + branch_size^3
-        #      = branch_size * (1 + branch_size + branch_size^2)
-        #      = branch_size * (branch_size^levels - 1) / (branch_size - 1)
-        #
-        # levels = ((max_turns + 1) // 2) // max_group_size
-        
-        num_levels = ((args.max_turns + 1) // 2) // args.max_group_size
-        
-        if args.branch_size == 1:
-            # 분기 없음: 단순히 num_levels개 노드
-            self.num_generations = num_levels
-        else:
-            # 기하급수: sum_{i=1}^{num_levels} branch_size^i
-            self.num_generations = args.branch_size * (
-                (args.branch_size ** num_levels - 1) // (args.branch_size - 1)
-            )
-        
-        logger.info(
-            f"TreeNode-based learning: {num_levels} levels, "
-            f"branch_size={args.branch_size}, "
-            f"total nodes={self.num_generations}"
-        )
+
+        self.num_generations = args.num_generations
         
         self.temperature = args.temperature
 
@@ -435,9 +407,9 @@ class ClassroomGRPOTrainer(Trainer):
         )
 
         # We need it for the global_batch_size to be divisible by the number of generations.
-        if self.global_batch_size % self.num_generations != 0:
+        if self.global_batch_size < self.num_generations:
             raise ValueError(
-                f"Global batch size {self.global_batch_size} is not divisible by the number of generations {self.num_generations}."
+                f"Global batch size {self.global_batch_size} must be >= num_generations {self.num_generations}."
             )
         self.number_of_problems_per_batch = (
             self.global_batch_size // self.num_generations
@@ -473,8 +445,7 @@ class ClassroomGRPOTrainer(Trainer):
             )
 
         dataloader_params = {
-            "batch_size": self._train_batch_size
-            * self.args.gradient_accumulation_steps,  # < this is the change
+            "batch_size": self.number_of_problems_per_batch // self.num_processes,
             "collate_fn": data_collator,
             "num_workers": self.args.dataloader_num_workers,
             "pin_memory": self.args.dataloader_pin_memory,
@@ -490,38 +461,13 @@ class ClassroomGRPOTrainer(Trainer):
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
     def _get_train_sampler(self) -> Sampler:
-        """
-        TreeNode 기반 학습에서는 RepeatSampler 불필요
-        각 문제당 num_generations개 노드가 자동 생성되므로
-        단순히 문제를 순차적/랜덤으로 샘플링하면 됨
-        """
-        from torch.utils.data import RandomSampler
-        
-        # 기본 랜덤 샘플러
-        base_sampler = RandomSampler(
+        return RepeatSampler(
             self.train_dataset,
-            replacement=False,
-            num_samples=None,
-        )
-        
-        # num_iterations만큼 재사용을 위한 wrapper
-        class RepeatingWrapper:
-            def __init__(self, base_sampler, repeat_count):
-                self.base_sampler = base_sampler
-                self.repeat_count = repeat_count
-            
-            def __iter__(self):
-                indices = list(self.base_sampler)
-                for _ in range(self.repeat_count):
-                    for idx in indices:
-                        yield idx
-            
-            def __len__(self):
-                return len(self.base_sampler) * self.repeat_count
-        
-        return RepeatingWrapper(
-            base_sampler,
-            repeat_count=self.num_iterations * self.args.gradient_accumulation_steps
+            mini_repeat_count=1,
+            batch_size=self.number_of_problems_per_batch // self.num_processes,
+            repeat_count=self.num_iterations * self.args.gradient_accumulation_steps,
+            shuffle=True,
+            seed=self.args.seed,
         )
 
     def _enable_gradient_checkpointing(
@@ -556,7 +502,7 @@ class ClassroomGRPOTrainer(Trainer):
         self,
         completion_ids: torch.Tensor,  # (B, L)
         node_advantages_list: List[List[Dict]],  # List[List[node_turn_pair_adv_dict]]
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Node별 advantage를 토큰 레벨로 매핑 (Context 없음! 각 node 독립!)
         
@@ -576,6 +522,7 @@ class ClassroomGRPOTrainer(Trainer):
         
         # 결과 텐서 초기화
         token_advantages = torch.zeros(batch_size, seq_len, device=device, dtype=torch.float32)
+        padding_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
         
         # Chat template tokens
         if "llama" in self.model_name_or_path.lower():
@@ -602,6 +549,11 @@ class ClassroomGRPOTrainer(Trainer):
         for batch_idx in range(batch_size):
             seq = completion_ids[batch_idx].tolist()
             node_turn_pairs = node_advantages_list[batch_idx]
+
+            if any(t.get("is_padding", False) for t in node_turn_pairs):
+                token_advantages[batch_idx, :] = 0.0  # Making Dummy Features
+                padding_mask[batch_idx] = True
+                continue
             
             if not node_turn_pairs:
                 continue
@@ -636,7 +588,7 @@ class ClassroomGRPOTrainer(Trainer):
                     adv = node_turn_pairs[turn_idx]['combined_advantage']
                     token_advantages[batch_idx, start_pos:end_pos] = adv
         
-        return token_advantages
+        return token_advantages, padding_mask
     
     def _find_assistant_turns_llama(self, seq, start_header_tok, end_header_tok, assistant_tok, eot_tok):
         """Llama-3 형식의 assistant 턴 찾기"""
@@ -925,14 +877,6 @@ class ClassroomGRPOTrainer(Trainer):
             add_special_tokens=False,
         )
         prompt_inputs = super()._prepare_inputs(prompt_inputs)
-        prompt_ids, prompt_mask = (
-            prompt_inputs["input_ids"],
-            prompt_inputs["attention_mask"],
-        )
-
-        if self.max_prompt_length is not None:
-            prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-            prompt_mask = prompt_mask[:, -self.max_prompt_length :]
 
         ############################################################################################################
         # vLLM Classroom generation
@@ -1002,19 +946,19 @@ class ClassroomGRPOTrainer(Trainer):
                 f"Generating completions for {len(ordered_set_of_prompts)} unique problems, with {self.num_generations} generations each and answers {real_answers}"
             )
 
-            # all_outputs: Per Node generation request outputs(sequence_text(tokenized), token_ids)
+            # all_completion_ids: Per Node generation request outputs(sequence_text(tokenized), token_ids)
             # all_node_advantages: Per Node advantage list(doubled list for each turn pair per node([[turn1, turn2], [turn3, turn4]]), with combined advantage)
-            all_outputs, all_node_advantages = sample_nodes(
+            all_completion_ids, all_node_advantages, all_node_rewards = sample_nodes(
                 ordered_set_of_prompts,
                 answers=real_answers,
                 meta=meta_info_shared,
                 server_port=self.server_port,
                 tokenizer=self.processing_class,
             )
-            logger.info(f"Generated {len(all_outputs)} nodes from {len(ordered_set_of_prompts)} problems")
+            logger.info(f"Generated {len(all_completion_ids)} nodes from {len(ordered_set_of_prompts)} problems")
 
             expected_count = len(ordered_set_of_prompts) * self.num_generations
-            actual_count = len(all_outputs)
+            actual_count = len(all_completion_ids)
 
             # Actual count might differ from expected count due to early stopping in conversations.
             if actual_count != expected_count:
@@ -1023,13 +967,24 @@ class ClassroomGRPOTrainer(Trainer):
                 )
                 if actual_count > expected_count:
                     logger.info(f"Truncating to {expected_count} conversations")
-                    all_outputs = all_outputs[:expected_count]
+                    all_outputs = all_completion_ids[:expected_count]
                     all_node_advantages = all_node_advantages[:expected_count]
                 elif actual_count < expected_count:
                     logger.info(f"Padding to {expected_count} nodes")
                     padding_count = expected_count - actual_count
-                    all_outputs.extend([all_outputs[-1]] * padding_count)
-                    all_node_advantages.extend([all_node_advantages[-1]] * padding_count)
+                    dummy_output = all_completion_ids[-1]
+                    dummy_advantage = [
+                        {
+                            "accuracy_advantage": 0.0,
+                            "pedagogical_advantage": 0.0,
+                            "length_advantage": 0.0,
+                            "end_of_conversation_advantage": 0.0,
+                            "combined_advantage": 0.0,
+                            "is_padding": True,
+                        }
+                    ]
+                    all_completion_ids.extend([dummy_output] * padding_count)
+                    all_node_advantages.extend([dummy_advantage] * padding_count)
 
             if self.use_experimental_shared_memory:
                 logger.info("Closing the shared memory")
@@ -1039,8 +994,9 @@ class ClassroomGRPOTrainer(Trainer):
                     shm.close()
                     shm.unlink()
         else:
-            all_outputs = []
+            all_completion_ids = []
             all_node_advantages = []
+            all_node_rewards = []
             if self.use_experimental_shared_memory:
                 logger.info("Deleting state_dict memory")
                 try:
@@ -1070,30 +1026,21 @@ class ClassroomGRPOTrainer(Trainer):
                 pass
             logger.info("Shared memory closed")
         self.accelerator.wait_for_everyone()
-        all_outputs_ = gather_object(all_outputs)
-        all_outputs = all_outputs_
+        all_completion_ids_ = gather_object(all_completion_ids)
+        all_completion_ids = all_completion_ids_
         all_node_advantages_ = gather_object(all_node_advantages)
         all_node_advantages = all_node_advantages_
+        all_node_rewards_ = gather_object(all_node_rewards)
+        all_node_rewards = all_node_rewards_
 
-        all_inputs = inputs
-        all_prompts = prompts
-        all_completion_ids = [
-            list(output.outputs[0].token_ids) for output in all_outputs
-        ]
-
-        step_size = len(all_outputs) // self.num_processes
+        step_size = len(all_completion_ids) // self.num_processes
         start_slice = self.accelerator.process_index * step_size
 
         logger.info(f"Start slice: {start_slice}, Step size: {step_size}")
 
-        outputs = all_outputs[start_slice : start_slice + step_size]
         node_advantages = all_node_advantages[start_slice : start_slice + step_size]
-        prompts = prompts[start_slice : start_slice + step_size]
-        prompts_text = prompts_text[start_slice : start_slice + step_size]
-        prompt_ids = prompt_ids[start_slice : start_slice + step_size]
-        prompt_mask = prompt_mask[start_slice : start_slice + step_size]
-        inputs = inputs[start_slice : start_slice + step_size]
         completion_ids = all_completion_ids[start_slice : start_slice + step_size]
+        node_rewards = all_node_rewards[start_slice : start_slice + step_size]
 
         completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
         completion_ids = pad(
@@ -1143,32 +1090,24 @@ class ClassroomGRPOTrainer(Trainer):
                         batch_size,
                     )
 
-        # Decode the generated completions
-        all_completions_text = self.processing_class.batch_decode(
-            all_completion_ids, skip_special_tokens=False
-        )
-        completions_text = self.processing_class.batch_decode(
-            completion_ids, skip_special_tokens=False
-        )
-        completions = completions_text
-
-        # NEW: Node별 advantage를 토큰 레벨로 매핑!
+        # NEW: Mapping per node advantages to token level advantages
         logger.info("Mapping node-level advantages to token-level advantages")
-        token_level_advantages = self._map_node_advantages_to_tokens(
+        token_level_advantages, padding_mask = self._map_node_advantages_to_tokens(
             completion_ids,
-            node_advantages  # 각 node의 turn pair advantages
+            node_advantages  # each node's turn pair advantages
         )  # (batch_size, seq_len)
         
-        # Assistant mask 적용하여 최종 advantage 계산
+        # Assistant mask
         assistant_mask = self._compute_assistant_mask(completion_ids).float()  # (B, L)
+        assistant_mask[padding_mask] = 0.0 # Making padded dummy sequences
         
-        # Completion mask (패딩 제외)
+        # Completion mask
         completion_mask_float = (completion_ids != self.processing_class.pad_token_id).float()
         
-        # 토큰별 advantage에 마스크 적용
+        # Adding masks to per token advantages
         masked_token_advantages = token_level_advantages * assistant_mask * completion_mask_float
         
-        # 각 시퀀스의 평균 advantage 계산 (per-sequence advantage for logging)
+        # Each sequence's mean advantage (per-sequence advantage for logging)
         active_token_counts = (assistant_mask * completion_mask_float).sum(dim=1).clamp(min=1)
         sequence_advantages = masked_token_advantages.sum(dim=1) / active_token_counts
         
@@ -1178,22 +1117,20 @@ class ClassroomGRPOTrainer(Trainer):
             f"min={sequence_advantages.min():.3f}, max={sequence_advantages.max():.3f}"
         )
 
-        # 정규화 옵션 (선택적)
+        # Normalization(optional, group-wise)
         if hasattr(self.args, 'normalize_tree_advantages') and self.args.normalize_tree_advantages:
             # Group-wise normalization
             adv_grouped_mean = sequence_advantages.view(-1, self.num_generations).mean(dim=1)
             adv_grouped_mean = adv_grouped_mean.repeat_interleave(self.num_generations, dim=0)
             sequence_advantages = sequence_advantages - adv_grouped_mean
-            
-            # 토큰 레벨에도 반영
+
             token_level_advantages = token_level_advantages - adv_grouped_mean.unsqueeze(1)
 
             if self.args.scale_rewards:
                 adv_grouped_std = sequence_advantages.view(-1, self.num_generations).std(dim=1)
                 adv_grouped_std = adv_grouped_std.repeat_interleave(self.num_generations, dim=0)
                 sequence_advantages = sequence_advantages / (adv_grouped_std + 1e-4)
-                
-                # 토큰 레벨에도 반영
+
                 token_level_advantages = token_level_advantages / (adv_grouped_std.unsqueeze(1) + 1e-4)
 
         # Log the metrics
@@ -1208,6 +1145,10 @@ class ClassroomGRPOTrainer(Trainer):
         self._metrics[mode]["completion_length"].append(completion_length)
 
         # Per-reward advantage logging (turn-pair level breakdown)
+        all_accuracy_rewards = []
+        all_pedagogical_rewards = []
+        all_length_rewards = []
+        all_end_of_conv_rewards = []
         all_accuracy_advs = []
         all_pedagogical_advs = []
         all_length_advs = []
@@ -1216,15 +1157,31 @@ class ClassroomGRPOTrainer(Trainer):
 
         for node_turn_pairs in node_advantages:
             for turn in node_turn_pairs:
+                if turn.get("is_padding", False):
+                    continue
+                all_pedagogical_rewards.append(turn.get("pedagogical_reward", 0.0))
+                all_length_rewards.append(turn.get("length_reward", 0.0))
                 all_accuracy_advs.append(turn.get("accuracy_advantage", 0.0))
                 all_pedagogical_advs.append(turn.get("pedagogical_advantage", 0.0))
                 all_length_advs.append(turn.get("length_advantage", 0.0))
                 all_end_of_conv_advs.append(turn.get("end_of_conversation_advantage", 0.0))
                 all_combined_advs.append(turn.get("combined_advantage", 0.0))
 
+        for node_reward in node_rewards:
+            acc = node_reward.get("accuracy_reward")
+            eoc = node_reward.get("end_of_conversation_reward")
+            if acc is not None:
+                all_accuracy_rewards.append(acc)
+            if eoc is not None:
+                all_end_of_conv_rewards.append(eoc)
+
         def _safe_mean(lst):
             return sum(lst) / len(lst) if lst else 0.0
 
+        self._metrics[mode]["accuracy_reward_mean"].append(_safe_mean(all_accuracy_rewards))
+        self._metrics[mode]["pedagogical_reward_mean"].append(_safe_mean(all_pedagogical_rewards))
+        self._metrics[mode]["length_reward_mean"].append(_safe_mean(all_length_rewards))
+        self._metrics[mode]["end_of_conv_reward_mean"].append(_safe_mean(all_end_of_conv_rewards))
         self._metrics[mode]["accuracy_advantage_mean"].append(_safe_mean(all_accuracy_advs))
         self._metrics[mode]["pedagogical_advantage_mean"].append(_safe_mean(all_pedagogical_advs))
         self._metrics[mode]["length_advantage_mean"].append(_safe_mean(all_length_advs))
@@ -1237,9 +1194,12 @@ class ClassroomGRPOTrainer(Trainer):
             self.accelerator.gather_for_metrics(nonzero_ratio).mean().item()
         )
 
+        logger.info(f"Returning completion_ids shape: {completion_ids.shape}")
+        logger.info(f"Returning token_advantages shape: {token_level_advantages.shape}")
+        logger.info(f"gradient_accumulation_steps: {self.args.gradient_accumulation_steps}")
+
         return {
-            "prompt_ids": prompt_ids,
-            "prompt_mask": prompt_mask,
+            "padding_mask": padding_mask,
             "completion_ids": completion_ids,
             "completion_mask": completion_mask,
             "token_advantages": token_level_advantages,  # NEW: (B, L) - 토큰별 advantage
@@ -1322,6 +1282,7 @@ class ClassroomGRPOTrainer(Trainer):
             inputs["completion_ids"],
             inputs["completion_mask"],
         )
+
         # input_ids = torch.cat([prompt_ids, completion_ids], dim=1)
         input_ids = completion_ids  # New: we only need the completions
         # attention_mask = torch.cat([prompt_mask, completion_mask], dim=1)
@@ -1334,7 +1295,8 @@ class ClassroomGRPOTrainer(Trainer):
         )  # we only need to compute the logits for the completion tokens
 
         per_token_logps = self._get_per_token_logps(
-            model, input_ids, attention_mask, logits_to_keep
+            model, input_ids, attention_mask, logits_to_keep,
+            self.args.per_device_train_batch_size
         )
 
         # Compute the KL divergence between the model and the reference model
@@ -1369,6 +1331,10 @@ class ClassroomGRPOTrainer(Trainer):
 
         # We mask with assistant loss too.
         assistant_mask = self._compute_assistant_mask(completion_ids).int()[:, 1:]
+        padding_mask = inputs.get("padding_mask", None)
+        if padding_mask is not None:
+            assistant_mask[padding_mask] = 0
+
         loss = (per_token_loss * completion_mask * assistant_mask).sum() / (
             assistant_mask * completion_mask
         ).sum()
@@ -1379,7 +1345,7 @@ class ClassroomGRPOTrainer(Trainer):
 
         if self.beta != 0.0:
             mean_kl = (
-                (per_token_kl * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)
+                (per_token_kl * completion_mask * assistant_mask).sum(dim=1) / completion_mask.sum(dim=1)
             ).mean()
             self._metrics[mode]["kl"].append(
                 self.accelerator.gather_for_metrics(mean_kl).mean().item()
@@ -1430,10 +1396,14 @@ class ClassroomGRPOTrainer(Trainer):
 
         # We mask with assistant loss too.
         assistant_mask = self._compute_assistant_mask(completion_ids).int()[:, 1:]
+        padding_mask = inputs.get("padding_mask", None)
+        if padding_mask is not None:
+            assistant_mask[padding_mask] = 0
 
         # Get per-token log probabilities
         per_token_logps = self._get_per_token_logps(
-            model, input_ids, attention_mask, logits_to_keep
+            model, input_ids, attention_mask, logits_to_keep,
+            self.args.per_device_train_batch_size
         )
         
         # Get reference log probabilities

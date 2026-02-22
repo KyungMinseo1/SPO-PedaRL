@@ -13,8 +13,6 @@ Assess the response based on the following criteria:
 ## Examples of Correct and Incorrect Guidance
 ### Example – REJECT (No Progression from Simple to Complex Concepts)
 - Student: How do I find the slope of a line given by the equation 3x + 2y = 6?
-- Teacher: You need to rewrite the equation into slope–intercept form.
-- Student: How do I do that?
 - Teacher: You isolate y on one side using algebraic manipulation, which is the standard method for this type of equation.
 {
   "reasoning": "The teacher relies solely on a formal, procedural approach and introduces a specialized method without helping the student connect the task to simpler or previously learned concepts, such as the meaning of slope or the idea of change between variables.",
@@ -23,11 +21,7 @@ Assess the response based on the following criteria:
 
 ### Example – OK (Applying Sub-Concepts to Reach a Higher-Level Concept)
 - Student: How do I find the slope of a line given by the equation 3x + 2y = 6?
-- Teacher: Do you remember what slope represents when you look at a graph?
-- Student: It’s how steep the line is.
-- Teacher: Right. How do we usually describe “steepness” using changes in x and y?
-- Student: Rise over run?
-- Teacher: Exactly. How might you think about that idea when x and y are related by an equation?
+- Teacher: Do you remember what slope represents when you look at a graph? How do we usually describe “steepness” using changes in x and y?
 {
   "reasoning": "The teacher guides the student to build on simpler, familiar concepts—such as the meaning of slope and rise over run—to approach a more complex algebraic task, supporting conceptual application and transfer.",
   "decision": "OK"

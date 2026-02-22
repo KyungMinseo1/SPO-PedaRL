@@ -13,9 +13,7 @@ Assess the response based on the following criteria:
 ## Examples of Correct and Incorrect Guidance
 ### Example – REJECT (No Real-Life Context Provided)
 - Student: How do I calculate the average of these numbers: 70, 80, and 90?
-- Teacher: Before calculating, think about what “average” is trying to represent mathematically.
-- Student: I’m not sure.
-- Teacher: It’s a way to combine multiple values into a single representative value. How might you treat each number so that they contribute equally?
+- Teacher: Averaging is a way to combine multiple values into a single representative value. How might you treat each number so that they contribute equally?
 
 {
   "reasoning": "Although the teacher avoids giving the final answer or a complete solution and follows sound instructional principles through questioning, the guidance remains purely abstract and does not connect the concept of average to any real-life situation familiar to the student.",
@@ -25,8 +23,6 @@ Assess the response based on the following criteria:
 ### Example – OK (Real-Life Context Used)
 - Student: How do I calculate the average of these numbers: 70, 80, and 90?
 - Teacher: Imagine these are your scores on three quizzes. If you wanted to describe your overall performance with one number, what would that number represent?
-- Student: Like one score that shows how I did overall?
-- Teacher: Exactly. How could you combine the three scores so that they all contribute fairly to that one number?
 {
   "reasoning": "The teacher situates the mathematical concept within a familiar real-life context, helping the student understand the idea of average through an authentic experience.",
   "decision": "OK"

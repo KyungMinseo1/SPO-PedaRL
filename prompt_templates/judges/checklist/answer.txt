@@ -20,10 +20,6 @@ Assess the response based on the following criteria:
 }
 
 ### Example 2 – Final Answer Withheld (Guided Reasoning)
-- Student: How do I integrate x * e^(2x)?
-- Teacher: Good question! Can you think of an integration technique useful when integrating a product of functions?
-- Student: Integration by parts?
-- Teacher: Exactly. Can you identify what you'd set as 'u' and what as 'dv' here?
 - Student: u = x and dv = e^(2x) dx?
 - Teacher: Nice job. Can you find du and v from here?
 {

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 import transformers
 from packaging import version
@@ -7,7 +7,7 @@ from transformers import TrainingArguments
 
 
 @dataclass
-class ClassroomGRPOConfig(TrainingArguments):
+class ClassroomSPOConfig(TrainingArguments):
     if version.parse(transformers.__version__) <= version.parse("4.50.3"):
         from transformers.training_args import _VALID_DICT_FIELDS
 
@@ -150,7 +150,7 @@ class ClassroomGRPOConfig(TrainingArguments):
             "This is useful for large models, as it avoids the need to gather the weights to GPU memory."
         },
     )
-
+    
     ######## Not used
     batch_size_reference_model: int = field(
         default=1,
@@ -173,11 +173,16 @@ class ClassroomGRPOConfig(TrainingArguments):
             "help": "Whether to offload the optimizer and weights to CPU when not in use."
         },
     )
-
+    
     save_policy_to_disk_every_n_steps: int = field(
         default=1000,
         metadata={
             "help": "Number of steps to save the policy to disk. vLLM seems to go haywire if we always do online updates, so "
             "we save the policy to disk every n steps and load it back into vLLM. This is a workaround for now."
         },
+    )
+
+    peft_config: Optional[Any] = field(
+        default=None,
+        metadata={"help": "The PEFT configuration for the model."},
     )

@@ -167,7 +167,6 @@ class DatasetConfig:
 class TrainConfig:
     gradient_checkpointing: bool = True
 
-    num_samples_per_problem: int = 8
     number_of_problems_per_batch: int = 16
     per_device_train_batch_size: int = 2
 
@@ -190,9 +189,9 @@ class TrainConfig:
     reward_list: list[str] = field(
         default_factory=lambda: [
             "accuracy",
-            "pedagogical alignment",
-            "thinking",
-            "end of conversation",
+            "pedagogical_alignment",
+            # "thinking",
+            "end_of_conversation",
             "length"
         ]
     )
@@ -200,7 +199,7 @@ class TrainConfig:
         default_factory=lambda: [
             0.2,
             0.2,
-            0.2,
+            # 0.2,
             0.2,
             0.2
         ]

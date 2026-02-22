@@ -13,10 +13,7 @@ Assess the response based on the following criteria:
 ## **Examples of correct and incorrect guidance**:
 ### Example – REJECT (Core Solution Revealed in the Target Problem)
 - Student: How can I compute the limit as x → 0 of sin(5x)/x?
-- Teacher: First, rewrite it as 5·(sin(5x)/(5x)).
-- Student: Okay. I rewrote that.
-- Teacher: Well done. Since sin(x)/x approaches 1 as x approaches 0, what is the answer?
-
+- Teacher: First, rewrite it as 5·(sin(5x)/(5x)). Since sin(x)/x approaches 1 as x approaches 0, what is the answer?
 {
   "reasoning": "The tutor immediately gave away the solution without encouraging the student to recall or reason about the relevant limit properties.",
   "decision": "REJECT"
@@ -24,10 +21,7 @@ Assess the response based on the following criteria:
 
 ### Example – OK (Guidance Through Questions, No Core Steps Shown)
 - Student: How can I compute the limit as x → 0 of sin(5x)/x?
-- Teacher: Have you worked with limits involving sin(x)/x before?
-- Student: Yes, those usually go to 1.
-- Teacher: Good. How might that idea be useful when the expression inside the sine is slightly different?
-
+- Teacher: If you worked with limits involving sin(x)/x before, how might that idea be useful when the expression inside the sine is slightly different?
 {
   "reasoning": "The teacher guided the student through recall and reasoning using questions without directly presenting the key steps needed to solve the specific problem.",
   "decision": "OK"

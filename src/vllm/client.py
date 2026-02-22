@@ -35,43 +35,32 @@ def sample_nodes(
     response_dict = response.json()
     nodes = response_dict["nodes"]
 
-    request_outputs = []
+    token_ids_list = []
     node_advantages_list = []
+    reward_list = []
 
     for node_data in nodes:
-        # Context 없음! 오직 현재 노드의 turn pairs만!
         node_turn_pairs = node_data["node_turn_pairs"]
-        
-        # 이 노드의 메시지만 구성 (context 제외)
         messages = []
         for turn in node_turn_pairs:
-            messages.append(turn["student_message"])
-            messages.append(turn["teacher_message"])
-        
-        # Tokenize
-        sequence_text = tokenizer.apply_chat_template(messages, tokenize=False)
+            student_msg = turn["student_message"].copy()
+            teacher_msg = turn["teacher_message"].copy()
+
+            student_msg["role"] = "user"       # student → user
+            teacher_msg["role"] = "assistant"  # teacher → assistant
+            
+            messages.append(student_msg)
+            messages.append(teacher_msg)
+
         token_ids = tokenizer.apply_chat_template(messages, tokenize=True)
-        
-        request_output = RequestOutput(
-            request_id=f"node_{node_data['node_id']}",
-            prompt="",
-            outputs=[
-                CompletionOutput(
-                    index=0,
-                    text=sequence_text,
-                    token_ids=token_ids,
-                    cumulative_logprob=0.0,
-                    logprobs=[],
-                )
-            ],
-            prompt_token_ids=[],
-            prompt_logprobs=[],
-            finished=True,
-        )
-        request_outputs.append(request_output)
+        token_ids_list.append(token_ids)
         node_advantages_list.append(node_turn_pairs)
-    
-    return request_outputs, node_advantages_list
+        reward_list.append(
+            {"accuracy_reward": node_data.get("accuracy_reward", None),
+             "end_of_conversation_reward": node_data.get("end_of_conversation_reward", None)}
+        )
+
+    return token_ids_list, node_advantages_list, reward_list
 
 
 def sample_conversations(

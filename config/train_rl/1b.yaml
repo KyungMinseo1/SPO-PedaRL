@@ -1,10 +1,13 @@
 train:
   number_of_problems_per_batch: 2
-  num_samples_per_problem: 2
+  per_device_train_batch_size: 8
 
   learning_rate: 5e-7
   beta: 0.001
   mu: 2
+
+  reward_list: ["accuracy", "pedagogical_alignment", "end_of_conversation", "length"]
+  reward_weights: [0.25, 0.25, 0.25, 0.25]
 
   save_policy_to_disk_every_n: 5
 
@@ -12,8 +15,10 @@ teacher_model:
   model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
   lora:
     enable: true
+    rank: 1
+    alpha: 1
   vllm:
-    temperature: 0.7
+    temperature: 0.8
     max_length: 10000
     max_num_seqs: 512
     gpu_memory_utilization: 0.5
@@ -32,7 +37,7 @@ student_model:
     gpu_memory_utilization: 0.5
     number_of_gpus_per_instance: 1
     max_number_of_instances: -1
-    use_v0: false
+    use_v0: true
 
     load_and_unload: true
 
@@ -46,7 +51,8 @@ judge_model:
     number_of_gpus_per_instance: 1
     max_number_of_instances: -1
     load_and_unload: false
-    use_v0: false
+    use_awq: true
+    use_v0: true
 
 reward_model:
   model_name_or_path: Answer # If we set this to None we get the -r_sol run.
@@ -57,12 +63,12 @@ huggingface:
 
 logging:
   wandb: true
-  wandb_project: train-rl
-  wandb_run_name: Qwen2.5-1B-Instruct-Lambda1.0(LoRA)
+  wandb_project: train-rl_SPO_EXPERIMENT
+  wandb_run_name: Qwen2.5-1B-Instruct-(LoRA1)
   run_group: 1b
   wandb_tags: ["1b"]
   save_dir: checkpoints/1b
-  save_steps: 10
+  save_steps: 5
 
 
 generation:
@@ -71,13 +77,17 @@ generation:
   # use_thinking: true
   # force_thinking: true
 
+  max_turns: 15
+  max_group_size: 3
+  branch_size: 3
+
   # This turns on the hard lambda.
-  extra_penalty_for_rejected_judges: 1.0 # This is the actual lambda we use.
+  pedgagogical_advantage_lambda: 0.5
   use_soft_pedagogical_reward: true # If we set this to true we calculate each rewards following the pedagogical rule independently.
   ignore_rejected_judge: true # If we set this to false we get the soft lambda runs. (If you use soft pedagogical reward, set this to true)
 
   use_experimental_shared_memory: false
   
   # If we turn this on we get the lambda=0.0 run
-  number_judge_attempts: 2
+  number_judge_attempts: 1
   # judges_rules_prompts_paths: {}
