@@ -38,9 +38,12 @@ def sample_nodes(
     token_ids_list = []
     node_advantages_list = []
     reward_list = []
+    problem_idx_list = []
 
     for node_data in nodes:
         node_turn_pairs = node_data["node_turn_pairs"]
+        if not node_turn_pairs:
+            continue
         messages = []
         for turn in node_turn_pairs:
             student_msg = turn["student_message"].copy()
@@ -57,10 +60,12 @@ def sample_nodes(
         node_advantages_list.append(node_turn_pairs)
         reward_list.append(
             {"accuracy_reward": node_data.get("accuracy_reward", None),
-             "end_of_conversation_reward": node_data.get("end_of_conversation_reward", None)}
+             "end_of_conversation_reward": node_data.get("end_of_conversation_reward", None),
+             "think_reward": node_data.get("think_reward", None),}
         )
+        problem_idx_list.append(node_data["problem_idx"])
 
-    return token_ids_list, node_advantages_list, reward_list
+    return token_ids_list, node_advantages_list, reward_list, problem_idx_list
 
 
 def sample_conversations(

@@ -111,6 +111,9 @@ class ParallelvLLMInference:
         # Track last checkpoint ID seen
         self._last_reload_ckpt = None
 
+        print(f"[ParallelvLLMInference] total_gpus={self.total_gpus}")
+        print(f"[ParallelvLLMInference] gpu_groups={self.gpu_groups}")
+
         # Start worker processes
         self._start_workers()
 
@@ -129,12 +132,17 @@ class ParallelvLLMInference:
 
     def _start_workers(self):
         """Spawn worker processes and wait until they're READY."""
+        if self.use_v0:
+            os.environ["VLLM_USE_V1"] = "0"
+            os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+
         self.ctx = get_context("spawn")
         self.task_queues = [self.ctx.Queue() for _ in range(self.n_instances)]
         self.result_queues = [self.ctx.Queue() for _ in range(self.n_instances)]
         self.processes = []
 
         for idx, gpu_group in enumerate(self.gpu_groups):
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_group))
             p = self.ctx.Process(
                 target=self._worker_loop,
                 args=(
@@ -318,7 +326,10 @@ class ParallelvLLMInference:
         tokenizer = llm.get_tokenizer()
 
         if self.load_and_unload:
-            llm.sleep()
+            try:
+                llm.sleep()
+            except Exception as e:
+                print(f"Sleep failed (ignoring): {e}")
 
         result_queue.put("READY")
         counter = 0

@@ -115,6 +115,13 @@ def main(cfg: RLModelTrainingConfig):
     train_dataset, _ = load_datasets(data_config, cfg.seed)
     logger.info(f"Loaded {len(train_dataset)} training examples")
 
+    if data_config.lower_bound_solve_rate is not None:
+        logger.info(f"Filtering training dataset with solve rate lower bound: {data_config.lower_bound_solve_rate}")
+        train_dataset = train_dataset.filter(lambda x: x["llama8b_solve_rate"] >= data_config.lower_bound_solve_rate)
+        logger.info(f"{len(train_dataset)} training examples remaining after filtering with solve rate lower bound of {data_config.lower_bound_solve_rate}")
+
+    train_dataset = train_dataset.select(range(min(len(train_dataset), data_config.max_train_examples)))
+
     def apply_template(example):
         problem = example["problem"]
         answer = example["answer"]
@@ -181,10 +188,14 @@ def main(cfg: RLModelTrainingConfig):
         # NOTE: # Using SPO makes auto num_generations calculation possible, which is more convenient for training with tree nodes.
         args=ClassroomSPOConfig(
         # args=ClassroomGDPOConfig(
-            gradient_accumulation_steps=math.ceil(spo_num_generations
-            * cfg.train.number_of_problems_per_batch
-            / cfg.train.per_device_train_batch_size
-            / accelerator.num_processes),
+            gradient_accumulation_steps=(
+                math.ceil(spo_num_generations * cfg.train.number_of_problems_per_batch
+                        / cfg.train.per_device_train_batch_size
+                        / accelerator.num_processes)
+                if cfg.train.top_k_adv is None
+                else cfg.train.top_k_adv // cfg.train.per_device_train_batch_size
+            ),
+            number_of_problems_per_batch=cfg.train.number_of_problems_per_batch,
             num_generations=spo_num_generations,
             gradient_checkpointing=train_config.gradient_checkpointing,
             per_device_train_batch_size=cfg.train.per_device_train_batch_size,
@@ -217,6 +228,10 @@ def main(cfg: RLModelTrainingConfig):
             batch_size_reference_model=cfg.train.batch_size_ref_model,
             save_policy_to_disk_every_n_steps=cfg.train.save_policy_to_disk_every_n,
             peft_config=peft_config,
+            top_k_adv=cfg.train.top_k_adv,
+            normalize_tree_advantages=cfg.train.normalize_tree_advantages,
+            reward_list=train_config.reward_list,
+            reward_weights=train_config.reward_weights,
         ),
         train_dataset=train_dataset,
         processing_class=tokenizer,

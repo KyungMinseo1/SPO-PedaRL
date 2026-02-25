@@ -18,6 +18,7 @@ class TurnPair:
     judge_results: Dict[str, List[JudgeResponse]] = field(default_factory=dict)  # rule_name -> List[JudgeResponse]
     pedagogical_reward: Optional[float] = None  # This turn's pedagogical reward
     length_reward: Optional[float] = None  # This turn's length reward
+    think_reward: Optional[float] = None  # This turn's think reward
     
     # Per Node Advantages
     accuracy_advantage: Optional[float] = None  # Node's accuracy advantage
@@ -51,18 +52,24 @@ class TreeNode:
     # Monte Carlo rewards
     accuracy_reward: Optional[float] = None  # 0 or 1 (for leaf nodes)
     end_of_conversation_reward: Optional[float] = None  # 0 or 1 (for leaf nodes)
+    think_reward: Optional[float] = None  # 0 or 1 (for leaf nodes)
     
     # Monte Carlo values
     accuracy_v_value: Optional[float] = None  # MC estimate
     end_of_conversation_v_value: Optional[float] = None  # MC estimate
+    think_v_value: Optional[float] = None  # MC estimate
+    
     accuracy_advantage: Optional[float] = None  # V(child) - V(parent)
     end_of_conversation_advantage: Optional[float] = None  # V(child) - V(parent)
-    
+    think_advantage: Optional[float] = None  # V(child) - V(parent)
+
     # Turn Level advantages
         # Pedagogical rewards and advantages (turn-level)
     pedagogical_advantage: Optional[float] = None  # reward - group_mean
         # Length rewards and advantages (turn-level)
     length_advantage: Optional[float] = None  # reward - group_mean
+        # Think rewards and advantages (turn-level)
+    think_advantage: Optional[float] = None  # reward - group_mean
     
     def add_turn_pair(self, student_msg: dict, teacher_msg: dict):
         turn = TurnPair(
@@ -125,7 +132,7 @@ class ConversationTree:
         self.next_node_id += 1
         
         node = TreeNode(
-            conversation_id=conversation_id, # TODO: Is this necessary?
+            conversation_id=conversation_id,
             node_id=node_id,
             problem_idx=self.problem_idx
         )
@@ -180,6 +187,22 @@ class ConversationTree:
         leaf_node = self.conversation_leaf_nodes.get(conversation_id)
         if leaf_node and leaf_node.is_leaf():
             leaf_node.end_of_conversation_reward = end_of_conversation_reward
+    
+    def assign_think_reward_to_conversation(
+        self,
+        conversation_id: str,
+        think_reward: float
+    ):
+        """
+        Allocate conversation's final think reward to leaf node
+        
+        Args:
+            conversation_id: Conversation ID
+            think_reward: 0 or 1
+        """
+        leaf_node = self.conversation_leaf_nodes.get(conversation_id)
+        if leaf_node and leaf_node.is_leaf():
+            leaf_node.think_reward = think_reward
     
     def build_levels(self):
         """Group nodes with BFS Algorithm"""
@@ -248,6 +271,46 @@ class ConversationTree:
                     node.end_of_conversation_advantage = node.end_of_conversation_v_value - node.parent.end_of_conversation_v_value
                 else:
                     node.end_of_conversation_advantage = 0.0
+    
+    def compute_think_advantages(self, is_think_turn_reward: bool = False):
+        """
+        Think advantage computation: A(child) = V(child) - V(parent)
+        """
+        if is_think_turn_reward:
+            for level_idx, level in enumerate(self.levels):
+                if not level:
+                    continue
+                
+                # Collect level-wise think rewards from all turn pairs
+                all_turn_rewards = []
+                for node in level:
+                    for turn in node.turn_pairs:
+                        if turn.think_reward is not None:
+                            all_turn_rewards.append(turn.think_reward)
+                
+                if not all_turn_rewards:
+                    for node in level:
+                        for turn in node.turn_pairs:
+                            turn.think_advantage = 0.0
+                    continue
+                
+                # Level-wise average
+                level_mean = sum(all_turn_rewards) / len(all_turn_rewards)
+                
+                # Calculate advantage for each turn pair
+                for node in level:
+                    for turn in node.turn_pairs:
+                        if turn.think_reward is not None:
+                            turn.think_advantage = turn.think_reward - level_mean
+                        else:
+                            turn.think_advantage = 0.0
+        else:
+            for level in self.levels:
+                for node in level:
+                    if node.parent and node.think_v_value is not None and node.parent.think_v_value is not None:
+                        node.think_advantage = node.think_v_value - node.parent.think_v_value
+                    else:
+                        node.think_advantage = 0.0
     
     def compute_pedagogical_advantages(self):
         """
@@ -321,7 +384,8 @@ class ConversationTree:
             self,
             # lambda_pedagogical: float = 1.0,
             reward_list: List[str] = [],
-            reward_weights: List[float] = []
+            reward_weights: List[float] = [],
+            is_think_turn_reward: bool = False
         ):
         """
         Allocate combined advantage to each turn pair
@@ -335,11 +399,18 @@ class ConversationTree:
                     turn.pedagogical_advantage = 0.0
                 if turn.length_advantage is None:
                     turn.length_advantage = 0.0
+
+                if is_think_turn_reward:
+                    if turn.think_advantage is None:
+                        turn.think_advantage = 0.0
+                else:
+                    turn.think_advantage = node.think_advantage if node.think_advantage is not None else 0.0
                 
                 # TODO: Should add thinking advantage as well (turn or node level)
                 advantage_dict = {
                     "accuracy": turn.accuracy_advantage,
                     "pedagogical_alignment": turn.pedagogical_advantage,
+                    "think": turn.think_advantage,
                     "end_of_conversation": turn.end_of_conversation_advantage,
                     "length": turn.length_advantage
                 }
@@ -403,6 +474,7 @@ class ConversationTree:
                     'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
                     'end_of_conversation_advantage': turn.end_of_conversation_advantage if turn.end_of_conversation_advantage is not None else 0.0,
                     'length_advantage': turn.length_advantage if turn.length_advantage is not None else 0.0,
+                    'think_advantage': turn.think_advantage if turn.think_advantage is not None else 0.0,
                     'combined_advantage': turn.combined_advantage if turn.combined_advantage is not None else 0.0,
                 })
         
@@ -420,6 +492,8 @@ class ConversationTree:
         for node_id, node in self.nodes.items():
             if node_id == 0:  # virtual root skip
                 continue
+            if not node.turn_pairs:
+                continue
             
             # 현재 노드의 turn pair advantages만
             node_turn_pairs = []
@@ -428,12 +502,14 @@ class ConversationTree:
                     'turn_idx': turn_idx,
                     'student_message': turn.student_message,
                     'teacher_message': turn.teacher_message,
+                    'judge_results': turn.judge_results,
                     'pedagogical_reward': turn.pedagogical_reward if turn.pedagogical_reward is not None else 0.0,
                     'length_reward': turn.length_reward if turn.length_reward is not None else 0.0,
                     'accuracy_advantage': turn.accuracy_advantage if turn.accuracy_advantage is not None else 0.0,
                     'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
                     'end_of_conversation_advantage': turn.end_of_conversation_advantage if turn.end_of_conversation_advantage is not None else 0.0,
                     'length_advantage': turn.length_advantage if turn.length_advantage is not None else 0.0,
+                    'think_advantage': turn.think_advantage if turn.think_advantage is not None else 0.0,
                     'combined_advantage': turn.combined_advantage if turn.combined_advantage is not None else 0.0,
                 })
             
@@ -445,59 +521,12 @@ class ConversationTree:
                 'accuracy_v_value': node.accuracy_v_value if node.accuracy_v_value is not None else 0.0,
                 'accuracy_advantage': node.accuracy_advantage if node.accuracy_advantage is not None else 0.0,
                 'accuracy_reward': node.accuracy_reward if node.accuracy_reward is not None else 0.0,
+                'think_v_value': node.think_v_value if node.think_v_value is not None else 0.0,
+                'think_advantage': node.think_advantage if node.think_advantage is not None else 0.0,
+                'think_reward': node.think_reward if node.think_reward is not None else 0.0,
                 'end_of_conversation_v_value': node.end_of_conversation_v_value if node.end_of_conversation_v_value is not None else 0.0,
                 'end_of_conversation_advantage': node.end_of_conversation_advantage if node.end_of_conversation_advantage is not None else 0.0,
                 'end_of_conversation_reward': node.end_of_conversation_reward if node.end_of_conversation_reward is not None else 0.0,
-            })
-        
-        return result
-    
-    def get_all_nodes_with_context(self) -> List[Dict[str, Any]]:
-        """
-        모든 노드를 context와 함께 반환 (학습용)
-        
-        Returns:
-            List of dicts with node info and context messages
-        """
-        result = []
-        
-        for node_id, node in self.nodes.items():
-            if node_id == 0:  # virtual root skip
-                continue
-            
-            # 부모 경로의 메시지들 (context)
-            path = self.get_path_to_node(node_id)
-            context_messages = []
-            
-            # 부모 노드들의 메시지 (현재 노드 제외)
-            for parent_node_id in path[:-1]:
-                if parent_node_id == 0:  # virtual root skip
-                    continue
-                parent_node = self.nodes[parent_node_id]
-                context_messages.extend(parent_node.get_all_messages())
-            
-            # 현재 노드의 turn pair advantages
-            node_turn_pairs = []
-            for turn_idx, turn in enumerate(node.turn_pairs):
-                node_turn_pairs.append({
-                    'turn_idx': turn_idx,
-                    'student_message': turn.student_message,
-                    'teacher_message': turn.teacher_message,
-                    'pedagogical_reward': turn.pedagogical_reward if turn.pedagogical_reward is not None else 0.0,
-                    'accuracy_advantage': turn.accuracy_advantage if turn.accuracy_advantage is not None else 0.0,
-                    'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
-                    'combined_advantage': turn.combined_advantage if turn.combined_advantage is not None else 0.0,
-                })
-            
-            result.append({
-                'problem_idx': self.problem_idx,
-                'node_id': node_id,
-                'parent_node_id': node.parent.node_id if node.parent else None,
-                'context_messages': context_messages,
-                'node_turn_pairs': node_turn_pairs,
-                'accuracy_v_value': node.accuracy_v_value if node.accuracy_v_value is not None else 0.0,
-                'accuracy_advantage': node.accuracy_advantage if node.accuracy_advantage is not None else 0.0,
-                'accuracy_reward': node.accuracy_reward if node.accuracy_reward is not None else 0.0,
             })
         
         return result
@@ -524,6 +553,7 @@ class ConversationTree:
                     'pedagogical_reward': turn.pedagogical_reward if turn.pedagogical_reward is not None else 0.0,
                     'accuracy_advantage': turn.accuracy_advantage if turn.accuracy_advantage is not None else 0.0,
                     'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
+                    'think_advantage': turn.think_advantage if turn.think_advantage is not None else 0.0,
                     'length_advantage': turn.length_advantage if turn.length_advantage is not None else 0.0,
                     'end_of_conversation_advantage': turn.end_of_conversation_advantage if turn.end_of_conversation_advantage is not None else 0.0,
                     'combined_advantage': turn.combined_advantage if turn.combined_advantage is not None else 0.0,
@@ -549,6 +579,7 @@ class ConversationTree:
                 'pedagogical_advantage': node.pedagogical_advantage if node.pedagogical_advantage is not None else 0.0,
                 'end_of_conversation_advantage': node.end_of_conversation_advantage if node.end_of_conversation_advantage is not None else 0.0,
                 'length_advantage': node.length_advantage if node.length_advantage is not None else 0.0,
+                'think_advantage': node.think_advantage if node.think_advantage is not None else 0.0,
                 'accuracy_v_value': node.accuracy_v_value if node.accuracy_v_value is not None else 0.0,
                 'end_of_conversation_v_value': node.end_of_conversation_v_value if node.end_of_conversation_v_value is not None else 0.0,
             }

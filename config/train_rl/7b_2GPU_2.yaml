@@ -1,15 +1,18 @@
 train:
   number_of_problems_per_batch: 8
-  per_device_train_batch_size: 3
+  per_device_train_batch_size: 4
+  num_samples_per_problem: 4
 
-  learning_rate: 3e-7
+  learning_rate: 5e-7
   beta: 0.001
   mu: 2
 
-  reward_list: ["accuracy", "pedagogical_alignment", "think", "end_of_conversation", "length"]
-  reward_weights: [0.4, 0.3, 0.1, 0.1, 0.1]
+  reward_list: ["accuracy", "pedagogical_alignment", "think"]
+  reward_weights: [0.4, 0.4, 0.2]
 
-  top_k_adv: 30 # If specified, use top-k advantage sampling during training for each device. (If 2 device, sample top_k_adv*2 samples)
+  top_k_adv: null # If specified, use top-k advantage sampling during training for each device. (If 2 device, sample top_k_adv*2 samples)
+
+  normalize_tree_advantages: true
 
 teacher_model:
   model_name_or_path: Qwen/Qwen2.5-3B-Instruct
@@ -66,10 +69,10 @@ huggingface:
 logging:
   wandb: true
   wandb_project: train-rl-SPO_LAB
-  wandb_run_name: Qwen2.5-3B-Instruct(LoRA_64)_2
+  wandb_run_name: Qwen2.5-3B-Instruct(LoRA_64)_3R_NormalizedAdv
   run_group: 3b
   wandb_tags: ["3b"]
-  save_dir: checkpoints/3b_2
+  save_dir: checkpoints/3b_3R_NormalizedAdv
   save_steps: 10
 
 
@@ -82,6 +85,7 @@ generation:
   # This turns on thinking.
   use_thinking: true
   force_thinking: true
+  convert_think_to_turn_reward: true
 
   # This turns on the hard lambda.
   pedgagogical_advantage_lambda: 0.5
@@ -95,3 +99,7 @@ generation:
   # If we turn this on we get the lambda=0.0 run
   # number_judge_attempts: 0
   # judges_rules_prompts_paths: {}
+
+dataset:
+  max_train_examples: 2000
+  lower_bound_solve_rate: 0.2

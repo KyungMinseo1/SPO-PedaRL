@@ -75,7 +75,6 @@ fi
 echo "[start_rl_training.sh] Launching VLLM server..."
 ./stop_vllm_server.sh || true
 sleep 2
-export CUDA_VISIBLE_DEVICES
 ./start_vllm_server.sh "${SERVER_ARGS[@]}" &
 SERVER_PID=$!
 

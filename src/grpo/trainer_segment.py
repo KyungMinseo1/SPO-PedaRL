@@ -406,14 +406,14 @@ class ClassroomSPOTrainer(Trainer):
             * self.args.gradient_accumulation_steps
         )
 
-        # We need it for the global_batch_size to be divisible by the number of generations.
-        if self.global_batch_size < self.num_generations:
-            raise ValueError(
-                f"Global batch size {self.global_batch_size} must be >= num_generations {self.num_generations}."
-            )
-        self.number_of_problems_per_batch = (
-            self.global_batch_size // self.num_generations
-        )
+        if self.args.top_k_adv is None:
+            if self.global_batch_size < self.num_generations:
+                raise ValueError(
+                    f"Global batch size {self.global_batch_size} must be >= num_generations {self.num_generations}."
+                )
+            self.number_of_problems_per_batch = self.global_batch_size // self.num_generations
+        else:
+            self.number_of_problems_per_batch = args.number_of_problems_per_batch
 
         set_seed(args.seed, device_specific=True)
 
@@ -496,7 +496,7 @@ class ClassroomSPOTrainer(Trainer):
         return model
 
     ####################################################################################
-    # Map node-level advantages to token-level advantages (TreeNode 기반)
+    # Map node-level advantages to token-level advantages
     ####################################################################################
     def _map_node_advantages_to_tokens(
         self,
@@ -589,6 +589,79 @@ class ClassroomSPOTrainer(Trainer):
                     token_advantages[batch_idx, start_pos:end_pos] = adv
         
         return token_advantages, padding_mask
+    
+    def _map_node_advantages_to_tokens_disentangled(
+        self,
+        completion_ids: torch.Tensor,
+        node_advantages_list: List[List[Dict]],
+        reward_list: List[str],  # ["accuracy", "pedagogical_alignment", "think"]
+    ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
+        
+        batch_size, seq_len = completion_ids.shape
+        device = completion_ids.device
+        
+        advantage_key_map = {
+            "accuracy": "accuracy_advantage",
+            "pedagogical_alignment": "pedagogical_advantage",
+            "think": "think_advantage",
+            "length": "length_advantage",
+            "end_of_conversation": "end_of_conversation_advantage",
+        }
+        
+        token_advantages_per_reward = {
+            reward: torch.zeros(batch_size, seq_len, device=device, dtype=torch.float32)
+            for reward in reward_list
+        }
+        padding_mask = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        
+        # Chat template tokens
+        if "llama" in self.model_name_or_path.lower():
+            start_header_tok = self.processing_class.encode(
+                "<|start_header_id|>", add_special_tokens=False
+            )[0]
+            end_header_tok = self.processing_class.encode(
+                "<|end_header_id|>", add_special_tokens=False
+            )[0]
+            assistant_tok = self.processing_class.encode(
+                "assistant", add_special_tokens=False
+            )[0]
+            eot_tok = self.processing_class.encode(
+                "<|eot_id|>", add_special_tokens=False
+            )[0]
+        else:
+            start_token = self.processing_class.apply_chat_template(
+                [{"role": "system", "content": ""}]
+            )[0]
+            assistant_token = self.processing_class.encode("assistant")[0]
+            eos_token = self.processing_class.eos_token_id
+        
+        for batch_idx in range(batch_size):
+            seq = completion_ids[batch_idx].tolist()
+            node_turn_pairs = node_advantages_list[batch_idx]
+
+            if any(t.get("is_padding", False) for t in node_turn_pairs):
+                padding_mask[batch_idx] = True
+                continue
+
+            if "llama" in self.model_name_or_path.lower():
+                assistant_turn_spans = self._find_assistant_turns_llama(
+                    seq, start_header_tok, end_header_tok, assistant_tok, eot_tok
+                )
+            else:
+                assistant_turn_spans = self._find_assistant_turns_qwen(
+                    seq, start_token, assistant_token, eos_token
+                )
+
+            if len(assistant_turn_spans) != len(node_turn_pairs):
+                continue
+
+            for turn_idx, (start_pos, end_pos) in enumerate(assistant_turn_spans):
+                turn = node_turn_pairs[turn_idx]
+                for reward in reward_list:
+                    key = advantage_key_map[reward]
+                    token_advantages_per_reward[reward][batch_idx, start_pos:end_pos] = turn.get(key, 0.0)
+
+        return token_advantages_per_reward, padding_mask
     
     def _find_assistant_turns_llama(self, seq, start_header_tok, end_header_tok, assistant_tok, eot_tok):
         """Llama-3 형식의 assistant 턴 찾기"""
@@ -712,6 +785,12 @@ class ClassroomSPOTrainer(Trainer):
             assistant_token = self.processing_class.encode("assistant")[0]
             eos_token = self.processing_class.eos_token_id
 
+            # TODO: Check if correct
+            if isinstance(eos_token, list):
+                eos_token_set = set(eos_token)
+            else:
+                eos_token_set = {eos_token}
+
             def compute_mask_for_sequence(seq):
                 """
                 Given a 1D list (or tensor converted to list) of tokens,
@@ -729,7 +808,13 @@ class ClassroomSPOTrainer(Trainer):
                         inside_assistant_message = True
                         tokens_in = 0
                         mask.append(0)
-                    elif token == eos_token:
+                    #elif token == eos_token:
+                    #    mask.append(1 if inside_assistant_message else 0)
+                    #    inside_a_message = False
+                    #    inside_assistant_message = False
+                    
+                    # TODO: Check if correct
+                    elif token in eos_token_set:
                         mask.append(1 if inside_assistant_message else 0)
                         inside_a_message = False
                         inside_assistant_message = False
@@ -927,7 +1012,6 @@ class ClassroomSPOTrainer(Trainer):
         if self.accelerator.is_local_main_process:
             logger.info(f"Entered with {len(all_prompts_text)} prompts")
             
-            # TreeNode 기반: 중복 없음! 그대로 사용
             ordered_set_of_prompts = all_prompts_text
             local_answers = answers
 
@@ -939,7 +1023,6 @@ class ClassroomSPOTrainer(Trainer):
             ordered_set_of_prompts = ordered_set_of_prompts[start_slice:end_slice]
             local_answers = local_answers[start_slice:end_slice]
             
-            # TreeNode 기반: answers도 중복 없음
             real_answers = local_answers
 
             logger.info(
@@ -948,7 +1031,7 @@ class ClassroomSPOTrainer(Trainer):
 
             # all_completion_ids: Per Node generation request outputs(sequence_text(tokenized), token_ids)
             # all_node_advantages: Per Node advantage list(doubled list for each turn pair per node([[turn1, turn2], [turn3, turn4]]), with combined advantage)
-            all_completion_ids, all_node_advantages, all_node_rewards = sample_nodes(
+            all_completion_ids, all_node_advantages, all_node_rewards, all_problem_idx = sample_nodes(
                 ordered_set_of_prompts,
                 answers=real_answers,
                 meta=meta_info_shared,
@@ -967,8 +1050,10 @@ class ClassroomSPOTrainer(Trainer):
                 )
                 if actual_count > expected_count:
                     logger.info(f"Truncating to {expected_count} conversations")
-                    all_outputs = all_completion_ids[:expected_count]
+                    all_completion_ids = all_completion_ids[:expected_count]
                     all_node_advantages = all_node_advantages[:expected_count]
+                    all_node_rewards = all_node_rewards[:expected_count]
+                    all_problem_idx = all_problem_idx[:expected_count]
                 elif actual_count < expected_count:
                     logger.info(f"Padding to {expected_count} nodes")
                     padding_count = expected_count - actual_count
@@ -979,13 +1064,15 @@ class ClassroomSPOTrainer(Trainer):
                             "pedagogical_advantage": 0.0,
                             "length_advantage": 0.0,
                             "end_of_conversation_advantage": 0.0,
+                            "think_advantage": 0.0,
                             "combined_advantage": 0.0,
                             "is_padding": True,
                         }
                     ]
                     all_completion_ids.extend([dummy_output] * padding_count)
                     all_node_advantages.extend([dummy_advantage] * padding_count)
-
+                    all_node_rewards.extend([{"accuracy_reward": 0.0, "end_of_conversation_reward": 0.0, "think_reward": 0.0}] * padding_count)
+                    all_problem_idx.extend([all_problem_idx[-1]] * padding_count)
             if self.use_experimental_shared_memory:
                 logger.info("Closing the shared memory")
 
@@ -997,6 +1084,7 @@ class ClassroomSPOTrainer(Trainer):
             all_completion_ids = []
             all_node_advantages = []
             all_node_rewards = []
+            all_problem_idx = []
             if self.use_experimental_shared_memory:
                 logger.info("Deleting state_dict memory")
                 try:
@@ -1032,6 +1120,8 @@ class ClassroomSPOTrainer(Trainer):
         all_node_advantages = all_node_advantages_
         all_node_rewards_ = gather_object(all_node_rewards)
         all_node_rewards = all_node_rewards_
+        all_problem_idx_ = gather_object(all_problem_idx)
+        all_problem_idx = all_problem_idx_
 
         step_size = len(all_completion_ids) // self.num_processes
         start_slice = self.accelerator.process_index * step_size
@@ -1041,19 +1131,139 @@ class ClassroomSPOTrainer(Trainer):
         node_advantages = all_node_advantages[start_slice : start_slice + step_size]
         completion_ids = all_completion_ids[start_slice : start_slice + step_size]
         node_rewards = all_node_rewards[start_slice : start_slice + step_size]
-
+        problem_idx = all_problem_idx[start_slice : start_slice + step_size]
         completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
         completion_ids = pad(
             completion_ids, padding_value=self.processing_class.pad_token_id
         )
-        # prompt_completion_ids: tensored token ids for generated sequences
-        prompt_completion_ids = completion_ids
 
         # TODO: Technically problematic if pad_token_id is equal to eos_token_id.
         completion_mask = (completion_ids != self.processing_class.pad_token_id).int()
         attention_mask = completion_mask
-        logits_to_keep = completion_ids.size(1) - 1
 
+        # NEW: Mapping per node advantages to token level advantages
+        logger.info("Mapping node-level advantages to token-level advantages")
+        #token_level_advantages, padding_mask = self._map_node_advantages_to_tokens(
+        #    completion_ids,
+        #    node_advantages  # each node's turn pair advantages
+        #)  # (batch_size, seq_len)
+        token_advantages_per_reward, padding_mask = self._map_node_advantages_to_tokens_disentangled(
+            completion_ids,
+            node_advantages,  # each node's turn pair advantages
+            reward_list=self.args.reward_list,
+        )  # (batch_size, seq_len)
+
+        problem_to_indices = defaultdict(list)
+        for i, pid in enumerate(problem_idx):
+            problem_to_indices[pid].append(i)
+
+
+        if self.args.top_k_adv is not None:
+
+            temp_combined = sum(
+                token_advantages_per_reward[r] * w
+                for r, w in zip(self.args.reward_list, self.args.reward_weights)
+            )
+            adv_scores = temp_combined.abs().sum(dim=1)
+
+            indices_list = []
+            for pid, idxs in problem_to_indices.items():
+                idxs_tensor = torch.tensor(idxs, device=adv_scores.device)
+                scores = adv_scores[idxs_tensor]
+                k = min(self.args.top_k_adv, len(idxs))
+                topk_local = torch.topk(scores, k).indices
+                topk_global = idxs_tensor[topk_local].tolist()
+                indices_list.extend(topk_global)
+            
+            indices_list = sorted(indices_list)
+            indices = torch.tensor(indices_list, device=device)
+            
+            completion_ids = completion_ids[indices]
+            padding_mask = padding_mask[indices]
+            completion_mask = completion_mask[indices]
+            attention_mask = attention_mask[indices]
+            token_advantages_per_reward = {
+                r: adv[indices] for r, adv in token_advantages_per_reward.items()
+            }
+            node_advantages = [node_advantages[i] for i in indices_list]
+            node_rewards = [node_rewards[i] for i in indices_list]
+            problem_idx = [problem_idx[i] for i in indices_list]
+
+            problem_to_indices = defaultdict(list)
+            for i, pid in enumerate(problem_idx):
+                problem_to_indices[pid].append(i)
+
+
+        if self.args.normalize_tree_advantages:
+            assistant_mask_bool = self._compute_assistant_mask(completion_ids).bool()  # (B, L)
+            assistant_mask_bool[padding_mask] = False
+
+            token_level_advantages = torch.zeros(
+                completion_ids.shape, dtype=torch.float32, device=device
+            )
+
+            for reward, weight in zip(self.args.reward_list, self.args.reward_weights):
+                adv = token_advantages_per_reward[reward].clone()
+
+                if reward == "accuracy":
+                    for pid, idxs in problem_to_indices.items():
+                        idxs_t = torch.tensor(idxs, device=device)
+                        
+                        turn_level_vals = []
+                        for b_idx in idxs_t:
+                            mask_row = assistant_mask_bool[b_idx]  # (L,)
+                            adv_row = adv[b_idx]
+                            vals = adv_row[mask_row]
+                            if vals.numel() > 0:
+                                unique_vals = vals[torch.cat([
+                                    torch.tensor([True], device=device),
+                                    vals[1:] != vals[:-1]
+                                ])]
+                                turn_level_vals.append(unique_vals)
+                        
+                        if not turn_level_vals:
+                            continue
+                        turn_level_vals = torch.cat(turn_level_vals)
+                        if turn_level_vals.numel() < 2:
+                            continue
+                        
+                        mean = turn_level_vals.mean()
+                        std = turn_level_vals.std().clamp(min=1e-4)
+                        mask = assistant_mask_bool[idxs_t]
+                        adv[idxs_t] = torch.where(mask, (adv[idxs_t] - mean) / std, adv[idxs_t])
+                else:
+                    turn_level_vals = []
+                    for b_idx in range(adv.shape[0]):
+                        if padding_mask[b_idx]:
+                            continue
+                        mask_row = assistant_mask_bool[b_idx]
+                        vals = adv[b_idx][mask_row]
+                        if vals.numel() > 0:
+                            unique_vals = vals[torch.cat([
+                                torch.tensor([True], device=device),
+                                vals[1:] != vals[:-1]
+                            ])]
+                            turn_level_vals.append(unique_vals)
+                    
+                    if turn_level_vals and torch.cat(turn_level_vals).numel() >= 2:
+                        turn_level_vals = torch.cat(turn_level_vals)
+                        mean = turn_level_vals.mean()
+                        std = turn_level_vals.std().clamp(min=1e-4)
+                        adv = torch.where(assistant_mask_bool, (adv - mean) / std, adv)
+                
+                token_level_advantages += weight * adv
+
+            assistant_mask = assistant_mask_bool.float()
+
+        else:
+            token_level_advantages = sum(
+                token_advantages_per_reward[r] * w
+                for r, w in zip(self.args.reward_list, self.args.reward_weights)
+            )
+            assistant_mask = self._compute_assistant_mask(completion_ids).float()
+            assistant_mask[padding_mask] = 0.0
+
+        logits_to_keep = completion_ids.size(1) - 1
         batch_size = self.args.per_device_train_batch_size
 
         with torch.no_grad():
@@ -1062,7 +1272,7 @@ class ClassroomSPOTrainer(Trainer):
             if self.num_iterations > 1:
                 old_per_token_logps = self._get_per_token_logps(
                     self.model,
-                    prompt_completion_ids,
+                    completion_ids,
                     attention_mask,
                     logits_to_keep,
                     batch_size,
@@ -1075,7 +1285,7 @@ class ClassroomSPOTrainer(Trainer):
             elif self.ref_model is not None:
                 ref_per_token_logps = self._get_per_token_logps(
                     self.ref_model,
-                    prompt_completion_ids,
+                    completion_ids,
                     attention_mask,
                     logits_to_keep,
                     batch_size,
@@ -1084,23 +1294,12 @@ class ClassroomSPOTrainer(Trainer):
                 with self.accelerator.unwrap_model(self.model).disable_adapter():
                     ref_per_token_logps = self._get_per_token_logps(
                         self.model,
-                        prompt_completion_ids,
+                        completion_ids,
                         attention_mask,
                         logits_to_keep,
                         batch_size,
                     )
 
-        # NEW: Mapping per node advantages to token level advantages
-        logger.info("Mapping node-level advantages to token-level advantages")
-        token_level_advantages, padding_mask = self._map_node_advantages_to_tokens(
-            completion_ids,
-            node_advantages  # each node's turn pair advantages
-        )  # (batch_size, seq_len)
-        
-        # Assistant mask
-        assistant_mask = self._compute_assistant_mask(completion_ids).float()  # (B, L)
-        assistant_mask[padding_mask] = 0.0 # Making padded dummy sequences
-        
         # Completion mask
         completion_mask_float = (completion_ids != self.processing_class.pad_token_id).float()
         
@@ -1116,22 +1315,6 @@ class ClassroomSPOTrainer(Trainer):
             f"std={sequence_advantages.std():.3f}, "
             f"min={sequence_advantages.min():.3f}, max={sequence_advantages.max():.3f}"
         )
-
-        # Normalization(optional, group-wise)
-        if hasattr(self.args, 'normalize_tree_advantages') and self.args.normalize_tree_advantages:
-            # Group-wise normalization
-            adv_grouped_mean = sequence_advantages.view(-1, self.num_generations).mean(dim=1)
-            adv_grouped_mean = adv_grouped_mean.repeat_interleave(self.num_generations, dim=0)
-            sequence_advantages = sequence_advantages - adv_grouped_mean
-
-            token_level_advantages = token_level_advantages - adv_grouped_mean.unsqueeze(1)
-
-            if self.args.scale_rewards:
-                adv_grouped_std = sequence_advantages.view(-1, self.num_generations).std(dim=1)
-                adv_grouped_std = adv_grouped_std.repeat_interleave(self.num_generations, dim=0)
-                sequence_advantages = sequence_advantages / (adv_grouped_std + 1e-4)
-
-                token_level_advantages = token_level_advantages / (adv_grouped_std.unsqueeze(1) + 1e-4)
 
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
@@ -1149,10 +1332,14 @@ class ClassroomSPOTrainer(Trainer):
         all_pedagogical_rewards = []
         all_length_rewards = []
         all_end_of_conv_rewards = []
+        all_think_rewards = []
+        
         all_accuracy_advs = []
         all_pedagogical_advs = []
         all_length_advs = []
         all_end_of_conv_advs = []
+        all_think_advs = []
+
         all_combined_advs = []
 
         for node_turn_pairs in node_advantages:
@@ -1165,15 +1352,19 @@ class ClassroomSPOTrainer(Trainer):
                 all_pedagogical_advs.append(turn.get("pedagogical_advantage", 0.0))
                 all_length_advs.append(turn.get("length_advantage", 0.0))
                 all_end_of_conv_advs.append(turn.get("end_of_conversation_advantage", 0.0))
+                all_think_advs.append(turn.get("think_advantage", 0.0))
                 all_combined_advs.append(turn.get("combined_advantage", 0.0))
 
         for node_reward in node_rewards:
             acc = node_reward.get("accuracy_reward")
             eoc = node_reward.get("end_of_conversation_reward")
+            tnk = node_reward.get("think_reward")
             if acc is not None:
                 all_accuracy_rewards.append(acc)
             if eoc is not None:
                 all_end_of_conv_rewards.append(eoc)
+            if tnk is not None:
+                all_think_rewards.append(tnk)
 
         def _safe_mean(lst):
             return sum(lst) / len(lst) if lst else 0.0
@@ -1182,10 +1373,14 @@ class ClassroomSPOTrainer(Trainer):
         self._metrics[mode]["pedagogical_reward_mean"].append(_safe_mean(all_pedagogical_rewards))
         self._metrics[mode]["length_reward_mean"].append(_safe_mean(all_length_rewards))
         self._metrics[mode]["end_of_conv_reward_mean"].append(_safe_mean(all_end_of_conv_rewards))
+        self._metrics[mode]["think_reward_mean"].append(_safe_mean(all_think_rewards))
+
         self._metrics[mode]["accuracy_advantage_mean"].append(_safe_mean(all_accuracy_advs))
         self._metrics[mode]["pedagogical_advantage_mean"].append(_safe_mean(all_pedagogical_advs))
         self._metrics[mode]["length_advantage_mean"].append(_safe_mean(all_length_advs))
         self._metrics[mode]["end_of_conv_advantage_mean"].append(_safe_mean(all_end_of_conv_advs))
+        self._metrics[mode]["think_advantage_mean"].append(_safe_mean(all_think_advs))
+
         self._metrics[mode]["combined_advantage_mean"].append(_safe_mean(all_combined_advs))
 
         # Ratio of tokens actually receiving a non-zero advantage signal
@@ -1319,7 +1514,7 @@ class ClassroomSPOTrainer(Trainer):
             else per_token_logps.detach()
         )
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon_high)
         
         # NEW: 각 토큰이 자신의 advantage를 사용!
         per_token_loss1 = coef_1 * token_advantages  # (B, L) * (B, L)

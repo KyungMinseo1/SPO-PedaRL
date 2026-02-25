@@ -699,21 +699,7 @@ class Conversation:
                     "Type": self.type.name,
                     "Student Persona": self.student_persona,
                     "Student Name": self.student_name,
-                    "Judge Decisions": {
-                        key: [
-                            {
-                                "reasoning": decision.reasoning,
-                                "decision": decision.decision.name,
-                            }
-                            for decision in decisions
-                        ]
-                        for key, decisions in self.judge_decisions.items()
-                    },
                     "Solutions": self.solutions,
-                    # "Rewards": self.rewards,
-                    "Accuracy Rewards": self.accuracy_rewards,
-                    "Initial Attempts": self.initial_attempts,
-                    "Initial Rewards": self.initial_rewards,
                     "Conversation from student perspective": self._get_conversation_from_student_perspective(),
                 }
             ]
@@ -892,9 +878,7 @@ class Classroom:
         )
 
         self.sampling_params_student_solution = SamplingParams(
-            # NOTE: For SPO, we fix n to 1
-            # n=generation_cfg.number_student_attempts,
-            n=1,
+            n=generation_cfg.number_student_attempts,
             temperature=student_model_cfg.vllm.temperature,
             top_k=student_model_cfg.vllm.top_k,
             top_p=student_model_cfg.vllm.top_p,
@@ -1359,12 +1343,18 @@ class Classroom:
                 # NOTE: Add accuracy reward to tree as well for later use.
                 accuracy_reward = conv.get_accuracy_reward()
                 end_of_conversation_reward = conv.get_end_of_conversation_reward()
+                if self.generation_cfg.use_thinking and not self.generation_cfg.convert_think_to_turn_reward:
+                    think_reward = conv.get_thinking_reward()
                 tree = self.conversation_trees[conv.problem_idx]
-                tree.assign_accuracy_reward_to_conversation(conv.current_node_id, accuracy_reward)
-                tree.assign_end_of_conversation_reward_to_conversation(conv.current_node_id, end_of_conversation_reward)
+                tree.assign_accuracy_reward_to_conversation(conv.conversation_id, accuracy_reward)
+                tree.assign_end_of_conversation_reward_to_conversation(conv.conversation_id, end_of_conversation_reward)
+                if self.generation_cfg.use_thinking and not self.generation_cfg.convert_think_to_turn_reward:
+                    tree.assign_think_reward_to_conversation(conv.conversation_id, think_reward)
 
         logger.info(f"Computing length rewards for all turn pairs.")
         self.get_length_reward_on_tree()
+        if self.generation_cfg.use_thinking and self.generation_cfg.convert_think_to_turn_reward:
+            self.get_think_reward_on_tree()
 
         logger.info(f"Took {time.time() - start_time} seconds.")
         # Free memory
@@ -1417,14 +1407,12 @@ class Classroom:
         
         # Store results
         failed_tasks = []
-        for task_idx, (tree, node, turn_idx, rule_name, _) in enumerate(all_judge_tasks):
+        for task_idx, (tree, node, turn_idx, rule_name, messages) in enumerate(all_judge_tasks):
             turn_pair = node.turn_pairs[turn_idx]
             
-            # Parse each attempt's results
             valid_decisions = []
             for attempt_responses in all_responses:
                 response = attempt_responses[task_idx]
-                
                 for output in response.outputs:
                     try:
                         out_text = output.text[
@@ -1432,40 +1420,51 @@ class Classroom:
                         ].replace("\\", "")
                         decision = JudgeResponse(**json.loads(out_text, strict=False))
                         valid_decisions.append(decision)
-                    except Exception as e:
+                    except Exception:
                         continue
             
-            # Store judge results
             if valid_decisions:
                 if rule_name not in turn_pair.judge_results:
                     turn_pair.judge_results[rule_name] = []
                 turn_pair.judge_results[rule_name].extend(valid_decisions)
             else:
                 failed_tasks.append((task_idx, tree, node, turn_idx, rule_name, messages))
-                logger.warning(
-                    f"No valid judge decisions for node {node.node_id}, "
-                    f"turn {turn_idx}, rule '{rule_name}'"
-                )
+                logger.warning(f"Failed to get valid judge response for node {node.node_id}, turn {turn_idx}, rule '{rule_name}'")
+
+        number_of_retry = 0
+        max_retry = 3
+        while failed_tasks and number_of_retry < max_retry:
+            logger.info(f"Retrying {len(failed_tasks)} failed judge tasks (attempt {number_of_retry + 1})")
+            retry_messages = [t[5] for t in failed_tasks]
+            
+            retry_all_responses = []
+            for _ in range(num_attempts):
+                responses = self.judge_model.run_batch(retry_messages, self.sampling_params_judge)
+                retry_all_responses.append(responses)
+            
+            for i, (task_idx, tree, node, turn_idx, rule_name, _) in enumerate(failed_tasks):
+                turn_pair = node.turn_pairs[turn_idx]
+                for attempt_responses in retry_all_responses:
+                    response = attempt_responses[i]
+                    for output in response.outputs:
+                        try:
+                            out_text = output.text[
+                                output.text.find("{"):output.text.rfind("}")+1
+                            ].replace("\\", "")
+                            decision = JudgeResponse(**json.loads(out_text, strict=False))
+                            turn_pair.judge_results.setdefault(rule_name, []).append(decision)
+                        except Exception:
+                            logger.warning(f"Retry also failed for node {node.node_id}, turn {turn_idx}, rule '{rule_name}'")
+            
+            number_of_retry += 1
+            failed_tasks = [
+                (task_idx, tree, node, turn_idx, rule_name, messages)
+                for task_idx, (tree, node, turn_idx, rule_name, messages) in enumerate(all_judge_tasks)
+                if len(node.turn_pairs[turn_idx].judge_results.get(rule_name, [])) < num_attempts
+            ]
         
         if failed_tasks:
-            logger.info(f"Retrying {len(failed_tasks)} failed judge tasks")
-            retry_messages = [t[5] for t in failed_tasks]
-            retry_responses = self.judge_model.run_batch(retry_messages, self.sampling_params_judge)
-            
-            for (task_idx, tree, node, turn_idx, rule_name, _), response in zip(failed_tasks, retry_responses):
-                turn_pair = node.turn_pairs[turn_idx]
-                for output in response.outputs:
-                    try:
-                        out_text = output.text[
-                            output.text.find("{"):output.text.rfind("}")+1
-                        ].replace("\\", "")
-                        decision = JudgeResponse(**json.loads(out_text, strict=False))
-                        if rule_name not in turn_pair.judge_results:
-                            turn_pair.judge_results[rule_name] = []
-                        turn_pair.judge_results[rule_name].append(decision)
-                    except Exception:
-                        logger.warning(f"Retry also failed for node {node.node_id}, turn {turn_idx}, rule '{rule_name}'")
-        
+            logger.warning(f"After {max_retry} attempts, {len(failed_tasks)} judge tasks still failed")
         # Compute pedagogical rewards from judge results
         self._compute_pedagogical_rewards_from_judges()
         
@@ -1494,6 +1493,36 @@ class Classroom:
             turn_pair.length_reward = length_reward(tokens_count)
         
         logger.info(f"Length rewards computed for all {len(texts)} turn pairs in the tree")
+
+    def get_think_reward_on_tree(self):
+        texts = []
+
+        # Compute length reward for all turn pairs from all trees
+        for problem_idx, tree in self.conversation_trees.items():
+            for node_id, node in tree.nodes.items():
+                # Skip virtual root (no turn pairs)
+                if not node.turn_pairs:
+                    continue
+                
+                for turn_idx, turn_pair in enumerate(node.turn_pairs):
+                    texts.append((problem_idx, node_id, turn_idx, turn_pair.teacher_message["content"]))
+
+        def think_reward(message):
+            penalty_for_missing_closing_think = 0.0
+            used_thinking = 0.0
+            if message.count("<think>") != message.count(
+                    "</think>"
+                ):
+                penalty_for_missing_closing_think = -1.0
+            elif message.count("<think>") > 0:
+                used_thinking += 1.0
+            return (penalty_for_missing_closing_think + used_thinking)
+
+        for problem_idx, node_id, turn_idx, teacher_message in texts:
+            turn_pair = self.conversation_trees[problem_idx].nodes[node_id].turn_pairs[turn_idx]
+            turn_pair.think_reward = think_reward(teacher_message)
+        
+        logger.info(f"Think rewards computed for all {len(texts)} turn pairs in the tree")
 
     def _hide_thinking(self, content: str):
         # We remove everything between <think> and </think>
@@ -1566,9 +1595,9 @@ class Classroom:
         self,
         # lambda_pedagogical: float = 1.0,
         reward_list: List[str] = [],
-        reward_weights: List[float] = []
+        reward_weights: List[float] = [],
+        is_think_turn_reward: bool = False
     ) -> Dict[int, Dict[str, float]]:
-        """모든 Tree의 advantages 계산 - TURN PAIR 레벨로!"""
         logger.info("Computing turn-pair-level advantages for all trees")
         
         all_advantages = {}  # node_id -> advantages (backward compatibility)
@@ -1582,6 +1611,7 @@ class Classroom:
             tree.compute_v_values()
             tree.compute_accuracy_advantages()
             tree.compute_end_of_conversation_advantages()
+            tree.compute_think_advantages(is_think_turn_reward)
             tree.compute_pedagogical_advantages()
             tree.compute_length_advantages()
             
@@ -1589,7 +1619,8 @@ class Classroom:
             tree.assign_advantages_to_turn_pairs(
                 # lambda_pedagogical,
                 reward_list,
-                reward_weights
+                reward_weights,
+                is_think_turn_reward
             )
             
             # Node-level advantages (backward compatibility)

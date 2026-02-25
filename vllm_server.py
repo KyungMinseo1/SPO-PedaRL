@@ -1,6 +1,4 @@
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 import wandb
 import hydra
 import uvicorn
@@ -71,11 +69,13 @@ def sample_nodes(request: ConversationSampleRequest):
         # lambda_pedagogical = getattr(config, 'pedagogical_advantage_lambda', 1.0)
         reward_list = config.train.reward_list
         reward_weights = config.train.reward_weights
+        is_think_turn_reward = config.generation.use_thinking and config.generation.convert_think_to_turn_reward
         
         node_advantages = classroom.compute_all_advantages(
             # lambda_pedagogical=lambda_pedagogical,
             reward_list=reward_list,
-            reward_weights=reward_weights
+            reward_weights=reward_weights,
+            is_think_turn_reward=is_think_turn_reward
         ) # Per Node(grouped turn)
 
     # Using stored trees from classroom class
@@ -95,11 +95,24 @@ def sample_nodes(request: ConversationSampleRequest):
                     "problem_idx": node_data["problem_idx"],
                     "node_id": node_data["node_id"],
                     "turn_idx": turn_adv["turn_idx"],
+                    "student_message": turn_adv["student_message"],
+                    "teacher_message": turn_adv["teacher_message"],
+                    "judge_results": {
+                        key: [
+                            {
+                                "reasoning": decision.reasoning,
+                                "decision": decision.decision.name,
+                            }
+                            for decision in decisions
+                        ]
+                        for key, decisions in turn_adv["judge_results"].items()
+                    },
                     "pedagogical_reward": turn_adv["pedagogical_reward"],
                     "accuracy_advantage": turn_adv["accuracy_advantage"],
                     "pedagogical_advantage": turn_adv["pedagogical_advantage"],
                     "end_of_conversation_advantage": turn_adv["end_of_conversation_advantage"],
                     "length_advantage": turn_adv["length_advantage"],
+                    "think_advantage": turn_adv["think_advantage"],
                     "combined_advantage": turn_adv["combined_advantage"],
                 })
         
@@ -111,6 +124,16 @@ def sample_nodes(request: ConversationSampleRequest):
             wandb.log({
                 f"nodes_batch_{len(classroom.conversation_sets)}": wandb.Table(dataframe=df_nodes)
             })
+
+        df_table = classroom.to_pd_latest()
+        df_table = df_table.astype(str)
+        wandb.log(
+            {
+                f"batch_{len(classroom.conversation_sets)}": wandb.Table(
+                    dataframe=df_table
+                )
+            }
+        )
     
     return {
         "nodes": all_nodes,

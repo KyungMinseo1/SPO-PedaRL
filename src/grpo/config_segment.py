@@ -47,6 +47,12 @@ class ClassroomSPOConfig(TrainingArguments):
             "help": "Maximum length of the prompt. If the prompt is longer than this value, it will be truncated left."
         },
     )
+    number_of_problems_per_batch: int = field(
+        default=16,
+        metadata={
+            "help": "Number of problems per batch."
+        },
+    )
     num_generations: Optional[int] = field(
         default=8,
         metadata={
@@ -185,4 +191,32 @@ class ClassroomSPOConfig(TrainingArguments):
     peft_config: Optional[Any] = field(
         default=None,
         metadata={"help": "The PEFT configuration for the model."},
+    )
+
+    top_k_adv: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "The `k` value for top-k advantage sampling. If not specified, no top-k sampling is applied during generation."
+        },
+    )
+
+    normalize_tree_advantages: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to normalize the tree advantages before computing the loss. This is useful for stabilizing training when the rewards have high variance."
+        },
+    )
+
+    reward_list: Optional[list] = field(
+        default_factory=lambda: ["accuracy", "pedagogical_alignment", "length", "end_of_conversation", "think"],
+        metadata={
+            "help": "List of rewards to use for training. The available rewards are `accuracy`, `pedagogical_alignment`, `length`, `end_of_conversation`, and `think`."
+        },
+    )
+
+    reward_weights: Optional[list] = field(
+        default_factory=lambda: [1.0, 1.0, 1.0, 1.0, 1.0],
+        metadata={
+            "help": "List of reward weights to use for training."
+        },
     )
