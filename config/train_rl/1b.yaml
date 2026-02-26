@@ -1,15 +1,19 @@
 train:
   number_of_problems_per_batch: 2
-  per_device_train_batch_size: 8
+  per_device_train_batch_size: 2
+  num_samples_per_problem: 2
 
   learning_rate: 5e-7
   beta: 0.001
   mu: 2
 
-  reward_list: ["accuracy", "pedagogical_alignment", "end_of_conversation", "length"]
-  reward_weights: [0.25, 0.25, 0.25, 0.25]
+  reward_list: ["accuracy", "pedagogical_alignment", "think"]
+  reward_weights: [0.4, 0.4, 0.2]
 
   save_policy_to_disk_every_n: 5
+
+  top_k_adv: null
+  normalize_tree_advantages: true
 
 teacher_model:
   model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
@@ -19,7 +23,7 @@ teacher_model:
     alpha: 1
   vllm:
     temperature: 0.8
-    max_length: 10000
+    max_length: 8000
     max_num_seqs: 512
     gpu_memory_utilization: 0.5
     number_of_gpus_per_instance: 1
@@ -32,7 +36,7 @@ student_model:
   model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
   vllm:
     temperature: 0.6
-    max_length: 10000
+    max_length: 8000
     max_num_seqs: 512
     gpu_memory_utilization: 0.5
     number_of_gpus_per_instance: 1
@@ -45,7 +49,7 @@ judge_model:
   model_name_or_path: Qwen/Qwen2.5-1.5B-Instruct-AWQ
   vllm:
     temperature: 0.6
-    max_length: 10000
+    max_length: 8000
     max_num_seqs: 512
     gpu_memory_utilization: 0.6
     number_of_gpus_per_instance: 1
@@ -64,10 +68,10 @@ huggingface:
 logging:
   wandb: true
   wandb_project: train-rl_SPO_EXPERIMENT
-  wandb_run_name: Qwen2.5-1B-Instruct-(LoRA1)
+  wandb_run_name: Qwen2.5-1B-Instruct-(LoRA1)_3R_NormalizedAdv
   run_group: 1b
   wandb_tags: ["1b"]
-  save_dir: checkpoints/1b
+  save_dir: checkpoints/1b_3R_NormalizedAdv
   save_steps: 5
 
 
@@ -77,7 +81,7 @@ generation:
   # use_thinking: true
   # force_thinking: true
 
-  max_turns: 15
+  max_turns: 11
   max_group_size: 3
   branch_size: 3
 
@@ -91,3 +95,7 @@ generation:
   # If we turn this on we get the lambda=0.0 run
   number_judge_attempts: 1
   # judges_rules_prompts_paths: {}
+
+dataset:
+  max_train_examples: 2000
+  lower_bound_solve_rate: 0.2

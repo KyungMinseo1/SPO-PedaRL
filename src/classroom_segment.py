@@ -1404,13 +1404,12 @@ class Classroom:
                 self.sampling_params_judge
             )
             all_responses.append(responses)
-        
+
         # Store results
         failed_tasks = []
         for task_idx, (tree, node, turn_idx, rule_name, messages) in enumerate(all_judge_tasks):
             turn_pair = node.turn_pairs[turn_idx]
-            
-            valid_decisions = []
+
             for attempt_responses in all_responses:
                 response = attempt_responses[task_idx]
                 for output in response.outputs:
@@ -1419,43 +1418,36 @@ class Classroom:
                             output.text.find("{"):output.text.rfind("}")+1
                         ].replace("\\", "")
                         decision = JudgeResponse(**json.loads(out_text, strict=False))
-                        valid_decisions.append(decision)
+                        turn_pair.judge_results.setdefault(rule_name, []).append(decision)
                     except Exception:
                         continue
-            
-            if valid_decisions:
-                if rule_name not in turn_pair.judge_results:
-                    turn_pair.judge_results[rule_name] = []
-                turn_pair.judge_results[rule_name].extend(valid_decisions)
-            else:
+
+            if len(turn_pair.judge_results.get(rule_name, [])) < num_attempts:
                 failed_tasks.append((task_idx, tree, node, turn_idx, rule_name, messages))
                 logger.warning(f"Failed to get valid judge response for node {node.node_id}, turn {turn_idx}, rule '{rule_name}'")
 
         number_of_retry = 0
-        max_retry = 3
+        max_retry = 5
         while failed_tasks and number_of_retry < max_retry:
             logger.info(f"Retrying {len(failed_tasks)} failed judge tasks (attempt {number_of_retry + 1})")
             retry_messages = [t[5] for t in failed_tasks]
-            
-            retry_all_responses = []
-            for _ in range(num_attempts):
-                responses = self.judge_model.run_batch(retry_messages, self.sampling_params_judge)
-                retry_all_responses.append(responses)
-            
+
+            responses = self.judge_model.run_batch(retry_messages, self.sampling_params_judge)
+
             for i, (task_idx, tree, node, turn_idx, rule_name, _) in enumerate(failed_tasks):
                 turn_pair = node.turn_pairs[turn_idx]
-                for attempt_responses in retry_all_responses:
-                    response = attempt_responses[i]
-                    for output in response.outputs:
-                        try:
-                            out_text = output.text[
-                                output.text.find("{"):output.text.rfind("}")+1
-                            ].replace("\\", "")
-                            decision = JudgeResponse(**json.loads(out_text, strict=False))
-                            turn_pair.judge_results.setdefault(rule_name, []).append(decision)
-                        except Exception:
-                            logger.warning(f"Retry also failed for node {node.node_id}, turn {turn_idx}, rule '{rule_name}'")
-            
+                response = responses[i]
+                for output in response.outputs:
+                    try:
+                        out_text = output.text[
+                            output.text.find("{"):output.text.rfind("}")+1
+                        ].replace("\\", "")
+                        decision = JudgeResponse(**json.loads(out_text, strict=False))
+                        turn_pair.judge_results.setdefault(rule_name, []).append(decision)
+                        break
+                    except Exception:
+                        continue
+
             number_of_retry += 1
             failed_tasks = [
                 (task_idx, tree, node, turn_idx, rule_name, messages)
@@ -1465,6 +1457,7 @@ class Classroom:
         
         if failed_tasks:
             logger.warning(f"After {max_retry} attempts, {len(failed_tasks)} judge tasks still failed")
+
         # Compute pedagogical rewards from judge results
         self._compute_pedagogical_rewards_from_judges()
         

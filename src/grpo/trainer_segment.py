@@ -36,6 +36,7 @@ import gc
 import shutil, os, re
 import time
 import wandb
+import random
 import deepspeed
 import warnings
 from collections import defaultdict
@@ -1055,24 +1056,54 @@ class ClassroomSPOTrainer(Trainer):
                     all_node_rewards = all_node_rewards[:expected_count]
                     all_problem_idx = all_problem_idx[:expected_count]
                 elif actual_count < expected_count:
-                    logger.info(f"Padding to {expected_count} nodes")
                     padding_count = expected_count - actual_count
-                    dummy_output = all_completion_ids[-1]
-                    dummy_advantage = [
-                        {
-                            "accuracy_advantage": 0.0,
-                            "pedagogical_advantage": 0.0,
-                            "length_advantage": 0.0,
-                            "end_of_conversation_advantage": 0.0,
-                            "think_advantage": 0.0,
-                            "combined_advantage": 0.0,
-                            "is_padding": True,
-                        }
-                    ]
-                    all_completion_ids.extend([dummy_output] * padding_count)
-                    all_node_advantages.extend([dummy_advantage] * padding_count)
-                    all_node_rewards.extend([{"accuracy_reward": 0.0, "end_of_conversation_reward": 0.0, "think_reward": 0.0}] * padding_count)
-                    all_problem_idx.extend([all_problem_idx[-1]] * padding_count)
+
+                    if self.args.top_k_adv is not None:
+                        logger.info(f"Padding to {expected_count} nodes (using top-k diminishes padding issues)")
+                        dummy_output = all_completion_ids[-1]
+                        dummy_advantage = [
+                            {
+                                "accuracy_advantage": 0.0,
+                                "pedagogical_advantage": 0.0,
+                                "length_advantage": 0.0,
+                                "end_of_conversation_advantage": 0.0,
+                                "think_advantage": 0.0,
+                                "combined_advantage": 0.0,
+                                "is_padding": True,
+                            }
+                        ]
+                        all_completion_ids.extend([dummy_output] * padding_count)
+                        all_node_advantages.extend([dummy_advantage] * padding_count)
+                        all_node_rewards.extend([{"accuracy_reward": 0.0, "end_of_conversation_reward": 0.0, "think_reward": 0.0}] * padding_count)
+                        all_problem_idx.extend([all_problem_idx[-1]] * padding_count)
+                    else:
+                        logger.info(f"Padding to {expected_count} nodes by resampling valid generations")
+                        problem_buckets = defaultdict(list)
+                        for i in range(actual_count):
+                            problem_buckets[all_problem_idx[i]].append(i)
+                        new_completion_ids = []
+                        new_node_advantages = []
+                        new_node_rewards = []
+                        new_problem_idx = []
+
+                        for pid, idxs in problem_buckets.items():
+                            fill_indices = idxs.copy()
+                            while len(fill_indices) < self.num_generations:
+                                fill_indices.append(random.choice(idxs))
+
+                            for i in fill_indices:
+                                new_completion_ids.append(all_completion_ids[i])
+                                new_node_advantages.append(all_node_advantages[i])
+                                new_node_rewards.append(all_node_rewards[i])
+                                new_problem_idx.append(all_problem_idx[i])
+
+                        all_completion_ids = new_completion_ids
+                        all_node_advantages = new_node_advantages
+                        all_node_rewards = new_node_rewards
+                        all_problem_idx = new_problem_idx
+
+                        logger.info(f"After problem-wise resampling: {len(all_completion_ids)} nodes")
+
             if self.use_experimental_shared_memory:
                 logger.info("Closing the shared memory")
 
