@@ -373,7 +373,10 @@ class ClassroomSPOTrainer(Trainer):
         model.warnings_issued["estimate_tokens"] = True
 
         # Initialize the metrics
-        self._metrics = {"train": defaultdict(list)}
+        self._metrics = {
+            "train": defaultdict(list),
+            "etc": defaultdict(list),
+        }
 
         self.liger_grpo_loss = LigerFusedLinearGRPOLoss(
             beta=self.beta,
@@ -1233,6 +1236,8 @@ class ClassroomSPOTrainer(Trainer):
                 completion_ids.shape, dtype=torch.float32, device=device
             )
 
+            normalized_adv_means = {}
+
             for reward, weight in zip(self.args.reward_list, self.args.reward_weights):
                 adv = token_advantages_per_reward[reward].clone()
 
@@ -1281,6 +1286,10 @@ class ClassroomSPOTrainer(Trainer):
                         mean = turn_level_vals.mean()
                         std = turn_level_vals.std().clamp(min=1e-4)
                         adv = torch.where(assistant_mask_bool, (adv - mean) / std, adv)
+
+                active = assistant_mask_bool & ~padding_mask.unsqueeze(1) if padding_mask.dim() == 1 else assistant_mask_bool
+                vals = adv[active]
+                normalized_adv_means[reward] = vals.mean().item() if vals.numel() > 0 else 0
                 
                 token_level_advantages += weight * adv
 
@@ -1360,15 +1369,15 @@ class ClassroomSPOTrainer(Trainer):
 
         # Per-reward advantage logging (turn-pair level breakdown)
         all_accuracy_rewards = []
-        all_pedagogical_rewards = []
+        all_pedagogical_alignment_rewards = []
         all_length_rewards = []
-        all_end_of_conv_rewards = []
+        all_end_of_conversation_rewards = []
         all_think_rewards = []
         
         all_accuracy_advs = []
-        all_pedagogical_advs = []
+        all_pedagogical_alignment_advs = []
         all_length_advs = []
-        all_end_of_conv_advs = []
+        all_end_of_conversation_advs = []
         all_think_advs = []
 
         all_combined_advs = []
@@ -1377,12 +1386,14 @@ class ClassroomSPOTrainer(Trainer):
             for turn in node_turn_pairs:
                 if turn.get("is_padding", False):
                     continue
-                all_pedagogical_rewards.append(turn.get("pedagogical_reward", 0.0))
+                all_pedagogical_alignment_rewards.append(turn.get("pedagogical_reward", 0.0))
                 all_length_rewards.append(turn.get("length_reward", 0.0))
+                if self.args.is_think_turn_reward:
+                    all_think_rewards.append(turn.get("think_reward", 0.0))
                 all_accuracy_advs.append(turn.get("accuracy_advantage", 0.0))
-                all_pedagogical_advs.append(turn.get("pedagogical_advantage", 0.0))
+                all_pedagogical_alignment_advs.append(turn.get("pedagogical_advantage", 0.0))
                 all_length_advs.append(turn.get("length_advantage", 0.0))
-                all_end_of_conv_advs.append(turn.get("end_of_conversation_advantage", 0.0))
+                all_end_of_conversation_advs.append(turn.get("end_of_conversation_advantage", 0.0))
                 all_think_advs.append(turn.get("think_advantage", 0.0))
                 all_combined_advs.append(turn.get("combined_advantage", 0.0))
 
@@ -1393,30 +1404,36 @@ class ClassroomSPOTrainer(Trainer):
             if acc is not None:
                 all_accuracy_rewards.append(acc)
             if eoc is not None:
-                all_end_of_conv_rewards.append(eoc)
-            if tnk is not None:
+                all_end_of_conversation_rewards.append(eoc)
+            if tnk is not None and not self.args.is_think_turn_reward:
                 all_think_rewards.append(tnk)
 
         def _safe_mean(lst):
             return sum(lst) / len(lst) if lst else 0.0
 
-        self._metrics[mode]["accuracy_reward_mean"].append(_safe_mean(all_accuracy_rewards))
-        self._metrics[mode]["pedagogical_reward_mean"].append(_safe_mean(all_pedagogical_rewards))
-        self._metrics[mode]["length_reward_mean"].append(_safe_mean(all_length_rewards))
-        self._metrics[mode]["end_of_conv_reward_mean"].append(_safe_mean(all_end_of_conv_rewards))
-        self._metrics[mode]["think_reward_mean"].append(_safe_mean(all_think_rewards))
+        for reward in self.args.reward_list:
+            self._metrics[mode][f"{reward}_R_avg"].append(_safe_mean(locals()[f"all_{reward}_rewards"]))
 
-        self._metrics[mode]["accuracy_advantage_mean"].append(_safe_mean(all_accuracy_advs))
-        self._metrics[mode]["pedagogical_advantage_mean"].append(_safe_mean(all_pedagogical_advs))
-        self._metrics[mode]["length_advantage_mean"].append(_safe_mean(all_length_advs))
-        self._metrics[mode]["end_of_conv_advantage_mean"].append(_safe_mean(all_end_of_conv_advs))
-        self._metrics[mode]["think_advantage_mean"].append(_safe_mean(all_think_advs))
+            if self.args.normalize_tree_advantages:
+                self._metrics[mode][f"{reward}_A_avg"].append(normalized_adv_means.get(reward, 0.0))
+            else:
+                self._metrics[mode][f"{reward}_A_avg"].append(_safe_mean(locals()[f"all_{reward}_advs"]))
+        
+        if self.args.normalize_tree_advantages:
+            self._metrics[mode]["combined_A_avg"].append(
+                self.accelerator.gather_for_metrics(sequence_advantages.mean()).float().mean().item()
+            )
+        else:
+            self._metrics[mode]["combined_A_avg"].append(_safe_mean(all_combined_advs))
 
-        self._metrics[mode]["combined_advantage_mean"].append(_safe_mean(all_combined_advs))
+        temp_list = set(["accuracy", "pedagogical_alignment", "length", "end_of_conversation", "think"]) - set(self.args.reward_list)
+        for reward in temp_list:
+            self._metrics["etc"][f"{reward}_R_avg"].append(_safe_mean(locals()[f"all_{reward}_rewards"]))
+            self._metrics["etc"][f"{reward}_A_avg"].append(_safe_mean(locals()[f"all_{reward}_advs"]))
 
         # Ratio of tokens actually receiving a non-zero advantage signal
         nonzero_ratio = (token_level_advantages.abs() > 1e-6).float().sum() / token_level_advantages.numel()
-        self._metrics[mode]["nonzero_advantage_ratio"].append(
+        self._metrics[mode]["nonzero_A_ratio"].append(
             self.accelerator.gather_for_metrics(nonzero_ratio).mean().item()
         )
 
@@ -1545,7 +1562,7 @@ class ClassroomSPOTrainer(Trainer):
             else per_token_logps.detach()
         )
         coef_1 = torch.exp(per_token_logps - old_per_token_logps)
-        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon_high)
+        coef_2 = torch.clamp(coef_1, 1 - self.epsilon, 1 + self.epsilon)
         
         # NEW: 각 토큰이 자신의 advantage를 사용!
         per_token_loss1 = coef_1 * token_advantages  # (B, L) * (B, L)
@@ -1686,10 +1703,15 @@ class ClassroomSPOTrainer(Trainer):
         metrics = {
             key: sum(val) / len(val) for key, val in self._metrics[mode].items()
         }  # average the metrics
-
+        if self._metrics["etc"]:
+            etc_metrics = {
+                f"{key}(etc)": sum(val) / len(val) for key, val in self._metrics["etc"].items()
+            }
+            metrics.update(etc_metrics)
         logs = {**logs, **metrics}
         if version.parse(transformers.__version__) >= version.parse("4.47.0.dev0"):
             super().log(logs, start_time)
         else:  # transformers<=4.46
             super().log(logs)
         self._metrics[mode].clear()
+        self._metrics["etc"].clear()

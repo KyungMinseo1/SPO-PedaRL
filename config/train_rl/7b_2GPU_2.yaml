@@ -1,6 +1,6 @@
 train:
   number_of_problems_per_batch: 8
-  per_device_train_batch_size: 4
+  per_device_train_batch_size: 8
   num_samples_per_problem: 4
 
   learning_rate: 5e-7
@@ -8,10 +8,9 @@ train:
   mu: 2
 
   reward_list: ["accuracy", "pedagogical_alignment", "think"]
-  reward_weights: [0.4, 0.4, 0.2]
+  reward_weights: [0.45, 0.45, 0.1]
 
-  top_k_adv: null # If specified, use top-k advantage sampling during training for each device. (If 2 device, sample top_k_adv*2 samples)
-
+  top_k_adv: null # If specified, use top-k advantage sampling per problem during training for each device. (If 2 device, sample top_k_adv*2 samples)
   normalize_tree_advantages: true
 
 teacher_model:
@@ -54,7 +53,7 @@ judge_model:
     gpu_memory_utilization: 0.4
     number_of_gpus_per_instance: 1
     max_number_of_instances: -1
-    load_and_unload: false
+    load_and_unload: true
     use_awq: true
     use_v0: true
     enforce_eager: true
@@ -69,10 +68,10 @@ huggingface:
 logging:
   wandb: true
   wandb_project: train-rl-SPO_LAB
-  wandb_run_name: Qwen2.5-3B-Instruct(LoRA_64)_3R_NormalizedAdv
+  wandb_run_name: Qwen2.5-3B-Instruct(LoRA_64)_3R_NormalizedAdv_5
   run_group: 3b
   wandb_tags: ["3b"]
-  save_dir: checkpoints/3b_3R_NormalizedAdv
+  save_dir: checkpoints/3b_3R_NormalizedAdv_5
   save_steps: 10
 
 

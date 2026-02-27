@@ -82,3 +82,54 @@ def load_datasets(cfg: DatasetConfig, seed: int) -> Dataset:
         print(e)
 
     return train_datasets, val_datasets
+
+def load_whole_datasets(cfg: DatasetConfig, seed: int) -> Dataset:
+
+    train_datasets, val_datasets = [], []
+
+    try:
+        for dataset in cfg.train_datasets:
+            dataset = load_dataset(dataset.name_or_path, split=dataset.split)
+            train_datasets.append(dataset)
+
+        # We sample based on max_examples and ratios.
+        if cfg.max_train_examples is not None:
+            ratios = [dataset.ratio for dataset in cfg.train_datasets]
+            total_ratio = sum(ratios)
+
+            for i, dataset in enumerate(train_datasets):
+                train_datasets[i] = dataset.shuffle(seed=seed)
+
+        # Concatenate the datasets
+        train_datasets = concatenate_datasets(train_datasets)
+        train_datasets = train_datasets.shuffle(seed=seed)
+    except Exception as e:
+        train_datasets = None
+        print("No training datasets provided or an error occurred while loading them.")
+        print(e)
+
+    try:
+        for dataset in cfg.eval_datasets:
+            dataset = load_dataset(dataset.name_or_path, split=dataset.split)
+            val_datasets.append(dataset)
+
+        if len(val_datasets) == 0:
+            return train_datasets, None
+
+        if cfg.max_val_examples is not None:
+            ratios = [dataset.ratio for dataset in cfg.eval_datasets]
+            total_ratio = sum(ratios)
+
+            for i, dataset in enumerate(val_datasets):
+                val_datasets[i] = dataset.shuffle(seed=seed)
+
+        val_datasets = concatenate_datasets(val_datasets)
+        val_datasets = val_datasets.shuffle(seed=seed)
+    except Exception as e:
+        val_datasets = None
+        print(
+            "No validation datasets provided or an error occurred while loading them."
+        )
+        print(e)
+
+    return train_datasets, val_datasets

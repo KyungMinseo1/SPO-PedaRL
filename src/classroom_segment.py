@@ -1626,7 +1626,7 @@ class Classroom:
                 key = (turn_adv['node_id'], turn_adv['turn_idx'])
                 all_turn_advantages[key] = turn_adv
         
-        logger.info(f"Computed advantages for {len(all_advantages)} nodes and {len(all_turn_advantages)} turn pairs")
+        logger.info(f"Computed advantages for {sum(tree.count_total_nodes() for tree in self.conversation_trees.values())} nodes.")
         
         # 두 가지를 모두 저장
         self.node_advantages = all_advantages

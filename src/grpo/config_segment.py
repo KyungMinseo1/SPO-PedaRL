@@ -220,3 +220,10 @@ class ClassroomSPOConfig(TrainingArguments):
             "help": "List of reward weights to use for training."
         },
     )
+
+    is_think_turn_reward: bool = field(
+        default=False, 
+        metadata={
+            "help": "Whether to treat the `think` reward as a turn-level reward instead of a problem-level reward. If `True`, the `think` reward is added to the reward of each turn. If `False` (default), the `think` reward is only added to the final turn of the conversation."
+        },
+    )

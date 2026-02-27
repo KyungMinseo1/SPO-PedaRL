@@ -34,7 +34,7 @@ from src.utils.utils import (
 )
 import warnings
 
-from utils.data import load_datasets
+from utils.data import load_datasets, load_whole_datasets
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -112,7 +112,8 @@ def main(cfg: RLModelTrainingConfig):
     #############################################################################
 
     logger.info(f"Loading datasets from {data_config.train_datasets}")
-    train_dataset, _ = load_datasets(data_config, cfg.seed)
+    # train_dataset, _ = load_datasets(data_config, cfg.seed)
+    train_dataset, _ = load_whole_datasets(data_config, cfg.seed)
     logger.info(f"Loaded {len(train_dataset)} training examples")
 
     if data_config.lower_bound_solve_rate is not None:
@@ -232,6 +233,7 @@ def main(cfg: RLModelTrainingConfig):
             normalize_tree_advantages=cfg.train.normalize_tree_advantages,
             reward_list=train_config.reward_list,
             reward_weights=train_config.reward_weights,
+            is_think_turn_reward=cfg.generation.convert_think_to_turn_reward,
         ),
         train_dataset=train_dataset,
         processing_class=tokenizer,

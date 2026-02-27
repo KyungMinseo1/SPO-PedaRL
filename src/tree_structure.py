@@ -505,6 +505,7 @@ class ConversationTree:
                     'judge_results': turn.judge_results,
                     'pedagogical_reward': turn.pedagogical_reward if turn.pedagogical_reward is not None else 0.0,
                     'length_reward': turn.length_reward if turn.length_reward is not None else 0.0,
+                    'think_reward': turn.think_reward if turn.think_reward is not None else 0.0,
                     'accuracy_advantage': turn.accuracy_advantage if turn.accuracy_advantage is not None else 0.0,
                     'pedagogical_advantage': turn.pedagogical_advantage if turn.pedagogical_advantage is not None else 0.0,
                     'end_of_conversation_advantage': turn.end_of_conversation_advantage if turn.end_of_conversation_advantage is not None else 0.0,
