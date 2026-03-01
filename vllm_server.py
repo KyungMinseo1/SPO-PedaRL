@@ -56,19 +56,25 @@ def sample_nodes(request: ConversationSampleRequest):
     problems = request.problems
     answers = request.answers
     meta = request.meta
+
+    reward_list = config.train.reward_list
+    reward_weights = config.train.reward_weights
+
+    active_rewards = [
+        r for r, w in zip(reward_list, reward_weights) if w > 0
+    ]
     
     with lock:
         # Conversations sampling
         conversations = classroom.sample_conversations(
             problems=problems,
             answers=answers,
-            meta=meta
+            meta=meta,
+            active_rewards=active_rewards
         )
 
         # Compute advantages for all nodes in the sampled conversations
         # lambda_pedagogical = getattr(config, 'pedagogical_advantage_lambda', 1.0)
-        reward_list = config.train.reward_list
-        reward_weights = config.train.reward_weights
         is_think_turn_reward = config.generation.use_thinking and config.generation.convert_think_to_turn_reward
         
         node_advantages = classroom.compute_all_advantages(
@@ -91,30 +97,36 @@ def sample_nodes(request: ConversationSampleRequest):
         node_metrics = []
         for node_data in all_nodes:
             for turn_adv in node_data["node_turn_pairs"]:
-                node_metrics.append({
+                entry = {
                     "problem_idx": node_data["problem_idx"],
                     "node_id": node_data["node_id"],
                     "turn_idx": turn_adv["turn_idx"],
                     "student_message": turn_adv["student_message"],
                     "teacher_message": turn_adv["teacher_message"],
-                    "judge_results": {
-                        key: [
-                            {
-                                "reasoning": decision.reasoning,
-                                "decision": decision.decision.name,
-                            }
-                            for decision in decisions
-                        ]
-                        for key, decisions in turn_adv["judge_results"].items()
-                    },
-                    "pedagogical_reward": turn_adv["pedagogical_reward"],
-                    "accuracy_advantage": turn_adv["accuracy_advantage"],
-                    "pedagogical_advantage": turn_adv["pedagogical_advantage"],
-                    "end_of_conversation_advantage": turn_adv["end_of_conversation_advantage"],
-                    "length_advantage": turn_adv["length_advantage"],
-                    "think_advantage": turn_adv["think_advantage"],
                     "combined_advantage": turn_adv["combined_advantage"],
-                })
+                }
+
+                if "pedagogical_alignment" in active_rewards:
+                    entry["judge_results"] = {
+                        key: [{"reasoning": d.reasoning, "decision": d.decision.name} for d in decisions]
+                        for key, decisions in turn_adv["judge_results"].items()
+                    }
+                    entry["pedagogical_reward"] = turn_adv["pedagogical_reward"]
+                    entry["pedagogical_advantage"] = turn_adv["pedagogical_advantage"]
+
+                if "accuracy" in active_rewards:
+                    entry["accuracy_advantage"] = turn_adv["accuracy_advantage"]
+
+                if "end_of_conversation" in active_rewards:
+                    entry["end_of_conversation_advantage"] = turn_adv["end_of_conversation_advantage"]
+
+                if "length" in active_rewards:
+                    entry["length_advantage"] = turn_adv["length_advantage"]
+
+                if "think" in active_rewards:
+                    entry["think_advantage"] = turn_adv["think_advantage"]
+
+                node_metrics.append(entry)
         
         # DataFrame for logging node metrics to Weights & Biases
         if node_metrics:

@@ -1,33 +1,38 @@
 You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
 
 The teacher should:
-- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
-- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
-- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
-- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
-- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+- NOT reveal the final answer or complete the remaining solution steps directly.
+- Provide feedback on the student's existing work without solving the problem for them.
+- Guide the student through questions, hints, or corrective feedback.
 
 Assess the response based on the following criteria:
-**Does the teacher AVOID directly presenting the core solution steps for the given problem, and if any method is shown, is it introduced only through a similar but different example rather than the original problem itself?**
+**Does the teacher avoid directly presenting a complete or near-complete solution to the problem, without leaving meaningful steps for the student to work through?**
+
+Note:
+- If this turn contains no problem-solving content (e.g., greetings, farewells, motivational exchanges), output OK only if the teacher's response is supportive, encouraging, or otherwise beneficial to the student. If the teacher's response is unhelpful or dismissive even in a non-academic context, output REJECT.
+- Reviewing or correcting the student's existing work is NOT considered revealing the answer or solution, as long as the teacher does not complete the unsolved parts for the student.
 
 ## **Examples of correct and incorrect guidance**:
-### Example – REJECT (Core Solution Revealed in the Target Problem)
+### Example – REJECT (Complete Solution Presented)
 - Student: How can I compute the limit as x → 0 of sin(5x)/x?
-- Teacher: First, rewrite it as 5·(sin(5x)/(5x)). Since sin(x)/x approaches 1 as x approaches 0, what is the answer?
+- Teacher: First, rewrite it as 5·(sin(5x)/(5x)). Since sin(x)/x → 1 as x → 0, the answer is 5.
 {
-  "reasoning": "The tutor immediately gave away the solution without encouraging the student to recall or reason about the relevant limit properties.",
+  "reasoning": "The teacher walked through every step and delivered the final answer, leaving nothing for the student to figure out.",
   "decision": "REJECT"
 }
 
-### Example – OK (Guidance Through Questions, No Core Steps Shown)
+### Example – OK (Key Steps Left to the Student)
 - Student: How can I compute the limit as x → 0 of sin(5x)/x?
-- Teacher: If you worked with limits involving sin(x)/x before, how might that idea be useful when the expression inside the sine is slightly different?
+- Teacher: Think about how sin(5x)/(5x) behaves as x → 0. Can you rewrite the expression to make use of that?
 {
-  "reasoning": "The teacher guided the student through recall and reasoning using questions without directly presenting the key steps needed to solve the specific problem.",
+  "reasoning": "The teacher pointed to the relevant idea without completing the solution, leaving the core reasoning step to the student.",
   "decision": "OK"
 }
 
 ## **Evaluate the following conversation**:
+
+The conversation below shows the last {{n_turns}} turns for context.
+**Evaluate ONLY the final teacher response. Previous turns are provided as context only.**
 
 ==BEGIN CONVERSATION==
 {% for message in conversation %}

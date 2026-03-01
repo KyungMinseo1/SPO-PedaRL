@@ -425,10 +425,8 @@ class ConversationTree:
     
     def get_path_to_node(self, node_id: int) -> List[int]:
         """
-        Root부터 특정 노드까지의 경로 반환
-        
         Args:
-            node_id: 목표 노드 ID
+            node_id: Target node ID
             
         Returns:
             List of node IDs from root to target node
@@ -442,8 +440,7 @@ class ConversationTree:
         while current is not None:
             path.append(current.node_id)
             current = current.parent
-        
-        # Root부터 시작하도록 reverse
+
         path.reverse()
         return path
     

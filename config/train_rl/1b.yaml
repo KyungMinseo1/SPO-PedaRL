@@ -4,13 +4,15 @@ train:
   num_samples_per_problem: 2
 
   learning_rate: 5e-7
-  beta: 0.001
+  beta: 0.01
   mu: 2
 
-  reward_list: ["accuracy", "pedagogical_alignment", "think"]
-  reward_weights: [0.4, 0.4, 0.2]
+  reward_list: ["accuracy", "pedagogical_alignment", "think", "length", "end_of_conversation"]
+  reward_weights: [1.0, 0.0, 0.0, 0.0, 0.0]
+  # reward_weights: [0.7, 0.1, 0.1, 0.05, 0.05]
+  # reward_weights: [0.4, 0.4, 0.2, 0.05, 0.05]
 
-  save_policy_to_disk_every_n: 5
+  save_policy_to_disk_every_n: 100
 
   top_k_adv: null
   normalize_tree_advantages: true
@@ -22,7 +24,7 @@ teacher_model:
     rank: 1
     alpha: 1
   vllm:
-    temperature: 0.8
+    temperature: 1.0
     max_length: 8000
     max_num_seqs: 512
     gpu_memory_utilization: 0.5
@@ -54,7 +56,7 @@ judge_model:
     gpu_memory_utilization: 0.6
     number_of_gpus_per_instance: 1
     max_number_of_instances: -1
-    load_and_unload: false
+    load_and_unload: true
     use_awq: true
     use_v0: true
 
@@ -68,20 +70,20 @@ huggingface:
 logging:
   wandb: true
   wandb_project: train-rl_SPO_EXPERIMENT
-  wandb_run_name: Qwen2.5-1B-Instruct-(LoRA1)_3R_NormalizedAdv
+  wandb_run_name: Accuracy_NormalizedAdv-(LoRA1)_1B
   run_group: 1b
   wandb_tags: ["1b"]
-  save_dir: checkpoints/1b_3R_NormalizedAdv
+  save_dir: checkpoints/Accuracy_NormalizedAdv-(LoRA1)_1B
   save_steps: 5
 
 
 generation:
 
   # This turns on thinking.
-  # use_thinking: true
-  # force_thinking: true
+  use_thinking: true
+  force_thinking: true
 
-  max_turns: 11
+  max_turns: 7
   max_group_size: 3
   branch_size: 3
 
@@ -96,6 +98,8 @@ generation:
   number_judge_attempts: 1
   # judges_rules_prompts_paths: {}
 
+  n_turns_to_sample: 3
+
 dataset:
-  max_train_examples: 2000
-  lower_bound_solve_rate: 0.2
+  max_train_examples: 1000
+  lower_bound_solve_rate: 0.0

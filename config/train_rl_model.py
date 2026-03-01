@@ -91,7 +91,7 @@ class GenerationConfig:
             "answer": "prompt_templates/judges/checklist/answer.txt",
             "solution_process": "prompt_templates/judges/checklist/solution_process.txt",
             "scaffolding": "prompt_templates/judges/checklist/scaffolding.txt",
-            "relevance": "prompt_templates/judges/checklist/relevance.txt",
+            # "relevance": "prompt_templates/judges/checklist/relevance.txt",
             # "application": "prompt_templates/judges/checklist/application.txt",
         }
     )
@@ -149,6 +149,8 @@ class GenerationConfig:
             None,
         ]
     )
+
+    n_turns_to_sample: int = 1  # Number of turns we will sample for pedagogical judge reward. Should be <= max_turns.
 
 
 @dataclass

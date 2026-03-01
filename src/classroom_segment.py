@@ -429,7 +429,10 @@ class Conversation:
                         open(
                             self.generation_cfg.judges_rules_prompts_paths[judge_rule]
                         ).read()
-                    ).render(conversation=self._get_hidden_conversation()),
+                    ).render(
+                        n_turns=self.generation_cfg.n_turns_to_sample,
+                        conversation=self._get_hidden_conversation()
+                    ),
                 }
             ]
 
@@ -476,7 +479,10 @@ class Conversation:
                         open(
                             self.generation_cfg.judges_rules_constructivist_prompts_paths[judge_rule]
                         ).read()
-                    ).render(conversation=self._get_hidden_conversation()),
+                    ).render(
+                        n_turns=self.generation_cfg.n_turns_to_sample,
+                        conversation=self._get_hidden_conversation()
+                    ),
                 }
             ]
 
@@ -1089,7 +1095,8 @@ class Classroom:
         forced_type: ConversationType = None,
         meta: dict = {},
         compute_initial_attempt: bool = False,
-        original_prompts: bool = False
+        original_prompts: bool = False,
+        active_rewards: List[str] = None,
     ) -> List[Conversation]:
         # If we force a certain type of conversation we set it here.
         if forced_type is None:
@@ -1283,7 +1290,8 @@ class Classroom:
                 self._save_current_conversation_to_tree(conv)
 
         # We now evaluate the judge rules and add the judge decisions to the conversations.
-        self.run_pedagogical_judges_on_tree()
+        if active_rewards is None or "pedagogical_alignment" in active_rewards:
+            self.run_pedagogical_judges_on_tree()
 
         # We now generate the solutions
         logger.info(("=" * 10) + "Sampling solutions" + ("=" * 10))
@@ -1352,9 +1360,11 @@ class Classroom:
                     tree.assign_think_reward_to_conversation(conv.conversation_id, think_reward)
 
         logger.info(f"Computing length rewards for all turn pairs.")
-        self.get_length_reward_on_tree()
-        if self.generation_cfg.use_thinking and self.generation_cfg.convert_think_to_turn_reward:
-            self.get_think_reward_on_tree()
+        if active_rewards is None or "length" in active_rewards:
+            self.get_length_reward_on_tree()
+        if active_rewards is None or "think" in active_rewards:
+            if self.generation_cfg.use_thinking and self.generation_cfg.convert_think_to_turn_reward:
+                self.get_think_reward_on_tree()
 
         logger.info(f"Took {time.time() - start_time} seconds.")
         # Free memory
@@ -1370,6 +1380,7 @@ class Classroom:
         """
         logger.info("=" * 20 + " Running pedagogical judges on tree " + "=" * 20)
         rule_names = self.generation_cfg.judges_rules_constructivist_prompts_paths.keys()
+        n_context = self.generation_cfg.n_turns_to_sample
 
         all_judge_tasks = []
         
@@ -1383,7 +1394,12 @@ class Classroom:
                 for turn_idx, turn_pair in enumerate(node.turn_pairs):
                     # Construct judge messages
                     for rule_name in rule_names:
-                        messages = self._construct_judge_messages(turn_pair, rule_name)
+                        context_turns = self._get_context_turns(
+                            tree, node, turn_idx, n_context
+                        )
+                        messages = self._construct_judge_messages(
+                            turn_pair, rule_name, context_turns
+                        )
                         all_judge_tasks.append((tree, node, turn_idx, rule_name, messages))
         
         logger.info(f"Total pedagogical judge tasks: {len(all_judge_tasks)}")
@@ -1534,16 +1550,45 @@ class Classroom:
             )
         return conversation
 
+    @staticmethod
+    def _get_context_turns(
+        tree: ConversationTree,
+        node: TreeNode,
+        turn_idx: int,
+        n_context: int
+    ) -> List[TurnPair]:
+        """Gather previous N turn pairs from the path to the current node, excluding the current turn"""
+        if n_context <= 1:
+            return []
+
+        path = tree.get_path_to_node(node.node_id)
+
+        all_turns = []
+        for node_id_in_path in path:
+            path_node = tree.nodes[node_id_in_path]
+            for t_idx, turn in enumerate(path_node.turn_pairs):
+                if path_node.node_id == node.node_id and t_idx >= turn_idx:
+                    break
+                all_turns.append(turn)
+
+        return all_turns[-n_context:] if len(all_turns) > n_context else all_turns
+
     def _construct_judge_messages(
         self,
         current_turn: TurnPair,
-        rule_name: str
+        rule_name: str,
+        context_turns: List[TurnPair] = []
     ) -> List[dict]:
         """Construct messages for judge evaluation"""
-        single_turn_messages = []
+        messages = []
+
+        for turn in context_turns:
+            messages.append(turn.student_message)
+            messages.append(turn.teacher_message)
+
         # Include current turn
-        single_turn_messages.append(current_turn.student_message)
-        single_turn_messages.append(current_turn.teacher_message)
+        messages.append(current_turn.student_message)
+        messages.append(current_turn.teacher_message)
 
         rule_prompt_path = self.generation_cfg.judges_rules_constructivist_prompts_paths[rule_name]
 
@@ -1554,7 +1599,10 @@ class Classroom:
                     open(
                         rule_prompt_path
                     ).read()
-                ).render(conversation=self._get_hidden_conversation(single_turn_messages)),
+                ).render(
+                    conversation=self._get_hidden_conversation(messages),
+                    n_turns=len(context_turns) + 1,
+                ),
             }
         ]
 

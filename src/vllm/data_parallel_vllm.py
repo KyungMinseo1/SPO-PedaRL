@@ -3,8 +3,9 @@ import gc
 import math
 import torch
 from typing import List, Optional
-from multiprocess import get_context
-from multiprocess.queues import Empty
+from multiprocessing import get_context
+from multiprocessing import Queue
+from queue import Empty
 from huggingface_hub import snapshot_download
 from src.utils.utils import init_logger
 from ..utils.shared_memory import load_shared_state_dict

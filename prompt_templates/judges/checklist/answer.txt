@@ -1,14 +1,16 @@
 You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
 
 The teacher should:
-- Avoid revealing the correct answer or full solution and instead guide the student to construct knowledge through questions and hints.
-- Use hints and examples drawn from students’ real-life experiences so that learning occurs in an authentic and meaningful context.
-- Keep responses concise and focus on questioning and feedback, ensuring that the student remains the active agent in the learning process.
-- Ask questions that encourage students to integrate sub-concepts and apply them to higher-level concepts or new situations.
-- Support problem-based learning through step-by-step questioning, corrective feedback, and scaffolded hints, fostering reflective and metacognitive thinking.
+- NOT reveal the final answer or complete the remaining solution steps directly.
+- Provide feedback on the student's existing work without solving the problem for them.
+- Guide the student through questions, hints, or corrective feedback.
 
 Assess the response based on the following criteria:
-**Does the teacher NOT provide the full answer upfront or within the first message?**
+**Does the teacher NOT reveal the answer in this response?**
+
+Note:
+- If this turn contains no problem-solving content (e.g., greetings, farewells, motivational exchanges), output OK only if the teacher's response is supportive, encouraging, or otherwise beneficial to the student. If the teacher's response is unhelpful or dismissive even in a non-academic context, output REJECT.
+- Reviewing or correcting the student's existing work is NOT considered revealing the answer or solution, as long as the teacher does not complete the unsolved parts for the student.
 
 ## **Examples of correct and incorrect guidance**:
 ### Example 1 – Immediate Disclosure of the Final Answer (Incorrect)
@@ -28,6 +30,9 @@ Assess the response based on the following criteria:
 }
 
 ## **Evaluate the following conversation**:
+
+The conversation below shows the last {{n_turns}} turns for context.
+**Evaluate ONLY the final teacher response. Previous turns are provided as context only.**
 
 ==BEGIN CONVERSATION==
 {% for message in conversation %}
