@@ -1062,23 +1062,9 @@ class ClassroomSPOTrainer(Trainer):
                     padding_count = expected_count - actual_count
 
                     if self.args.top_k_adv is not None:
-                        logger.info(f"Padding to {expected_count} nodes (using top-k diminishes padding issues)")
-                        dummy_output = all_completion_ids[-1]
-                        dummy_advantage = [
-                            {
-                                "accuracy_advantage": 0.0,
-                                "pedagogical_advantage": 0.0,
-                                "length_advantage": 0.0,
-                                "end_of_conversation_advantage": 0.0,
-                                "think_advantage": 0.0,
-                                "combined_advantage": 0.0,
-                                "is_padding": True,
-                            }
-                        ]
-                        all_completion_ids.extend([dummy_output] * padding_count)
-                        all_node_advantages.extend([dummy_advantage] * padding_count)
-                        all_node_rewards.extend([{"accuracy_reward": 0.0, "end_of_conversation_reward": 0.0, "think_reward": 0.0}] * padding_count)
-                        all_problem_idx.extend([all_problem_idx[-1]] * padding_count)
+    
+                        logger.info(f"top_k_adv mode: using {actual_count} nodes as-is, top_k will handle the rest")
+                        pass
                     else:
                         logger.info(f"Padding to {expected_count} nodes by resampling valid generations")
                         problem_buckets = defaultdict(list)
@@ -1157,15 +1143,24 @@ class ClassroomSPOTrainer(Trainer):
         all_problem_idx_ = gather_object(all_problem_idx)
         all_problem_idx = all_problem_idx_
 
-        step_size = len(all_completion_ids) // self.num_processes
-        start_slice = self.accelerator.process_index * step_size
+        all_pids = sorted(set(all_problem_idx))
+        num_problems = len(all_pids)
+        problems_per_process = num_problems // self.num_processes
 
-        logger.info(f"Start slice: {start_slice}, Step size: {step_size}")
+        start_pid_idx = self.accelerator.process_index * problems_per_process
+        end_pid_idx = (
+            (self.accelerator.process_index + 1) * problems_per_process
+            if self.accelerator.process_index < self.num_processes - 1
+            else num_problems
+        )
 
-        node_advantages = all_node_advantages[start_slice : start_slice + step_size]
-        completion_ids = all_completion_ids[start_slice : start_slice + step_size]
-        node_rewards = all_node_rewards[start_slice : start_slice + step_size]
-        problem_idx = all_problem_idx[start_slice : start_slice + step_size]
+        my_pids = set(all_pids[start_pid_idx:end_pid_idx])
+        my_indices = [i for i, pid in enumerate(all_problem_idx) if pid in my_pids]
+
+        node_advantages = [all_node_advantages[i] for i in my_indices]
+        completion_ids = [all_completion_ids[i] for i in my_indices]
+        node_rewards = [all_node_rewards[i] for i in my_indices]
+        problem_idx = [all_problem_idx[i] for i in my_indices]
         completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
         completion_ids = pad(
             completion_ids, padding_value=self.processing_class.pad_token_id
@@ -1194,20 +1189,26 @@ class ClassroomSPOTrainer(Trainer):
 
         if self.args.top_k_adv is not None:
 
-            temp_combined = sum(
-                token_advantages_per_reward[r] * w
-                for r, w in zip(self.args.reward_list, self.args.reward_weights)
-            )
-            adv_scores = temp_combined.abs().sum(dim=1)
+            active_rewards = [(r, w) for r, w in zip(self.args.reward_list, self.args.reward_weights) if w > 0]
+            k_per_reward = max(1, self.args.top_k_adv // len(active_rewards))
 
             indices_list = []
             for pid, idxs in problem_to_indices.items():
-                idxs_tensor = torch.tensor(idxs, device=adv_scores.device)
-                scores = adv_scores[idxs_tensor]
-                k = min(self.args.top_k_adv, len(idxs))
-                topk_local = torch.topk(scores, k).indices
-                topk_global = idxs_tensor[topk_local].tolist()
-                indices_list.extend(topk_global)
+                idxs_tensor = torch.tensor(idxs, device=device)
+                selected = set()
+                for reward, _ in active_rewards:
+                    scores = token_advantages_per_reward[reward][idxs_tensor].abs().sum(dim=1)
+                    k = min(k_per_reward, len(idxs))
+                    topk_local = torch.topk(scores, k).indices
+                    selected.update(idxs_tensor[topk_local].tolist())
+                
+                selected = sorted(selected)
+    
+                # Filling top_k_adv // num_problems
+                while len(selected) < self.args.top_k_adv:
+                    selected.append(random.choice(selected))
+                
+                indices_list.extend(selected[:self.args.top_k_adv])
             
             indices_list = sorted(indices_list)
             indices = torch.tensor(indices_list, device=device)
