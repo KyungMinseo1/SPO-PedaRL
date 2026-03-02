@@ -165,6 +165,8 @@ class DatasetConfig:
     train_datasets: list[Dataset] = field(default_factory=lambda: [Dataset()])
     max_train_examples: int = -1
     lower_bound_solve_rate: Optional[float] = None
+    exclude_sample_ids_path: Optional[str] = None
+    save_selected_sample_ids_path: Optional[str] = None
 
 
 @dataclass

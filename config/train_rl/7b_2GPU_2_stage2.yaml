@@ -1,6 +1,6 @@
 train:
-  number_of_problems_per_batch: 8
-  per_device_train_batch_size: 2
+  number_of_problems_per_batch: 4
+  per_device_train_batch_size: 8
   num_samples_per_problem: 4
 
   learning_rate: 5e-7
@@ -8,11 +8,9 @@ train:
   mu: 2
 
   reward_list: ["accuracy", "pedagogical_alignment", "think", "length", "end_of_conversation"]
-  # reward_weights: [1.0, 0.0, 0.0, 0.0, 0.0]
-  # reward_weights: [0.7, 0.1, 0.1, 0.05, 0.05]
-  reward_weights: [0.4, 0.4, 0.1, 0.05, 0.05]
+  reward_weights: [0.7, 0.1, 0.1, 0.05, 0.05]
 
-  top_k_adv: 10 # If specified, use top-k advantage sampling per problem during training for each device. (If 2 device, sample top_k_adv*2 samples)
+  top_k_adv: null # If specified, use top-k advantage sampling per problem during training for each device. (If 2 device, sample top_k_adv*2 samples)
   normalize_tree_advantages: true
 
 teacher_model:
@@ -70,10 +68,10 @@ huggingface:
 logging:
   wandb: true
   wandb_project: train-rl-SPO_LAB
-  wandb_run_name: Qwen2.5-7B-Instruct(LoRA_64)_NormalizedAdv
+  wandb_run_name: Qwen2.5-7B-Instruct(LoRA_64)_Stage2_Balanced
   run_group: 7b
-  wandb_tags: ["7b"]
-  save_dir: checkpoints/7b_NormalizedAdv
+  wandb_tags: ["7b", "stage2"]
+  save_dir: checkpoints/7b_Stage2_Balanced
   save_steps: 10
 
 
@@ -103,8 +101,8 @@ generation:
 
 dataset:
   max_train_examples: 2000
-  lower_bound_solve_rate: 0.1
-  # Exclude IDs already used in previous stages
-  exclude_sample_ids_path: checkpoints/7b_NormalizedAdv/used_sample_ids.txt
-  # Save currently selected IDs (merged) for next stage
-  save_selected_sample_ids_path: checkpoints/7b_NormalizedAdv/used_sample_ids.txt
+  lower_bound_solve_rate: 0.0
+  exclude_sample_ids_path: checkpoints/7b_Accuracy_NormalizedAdv/used_sample_ids.txt
+  save_selected_sample_ids_path: checkpoints/7b_Accuracy_NormalizedAdv/used_sample_ids.txt
+
+skip_first_samples: 0
