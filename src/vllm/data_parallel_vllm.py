@@ -19,6 +19,130 @@ class InferenceTask:
     EMBEDDING = "embedding"
     CLASSIFY = "classify"
 
+def _worker_loop_fn(gpu_group, task_queue, result_queue, config):
+    import os
+    import gc
+    import torch
+    from vllm import LLM
+    from vllm.lora.request import LoRARequest
+    from src.utils.shared_memory import load_shared_state_dict
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_group))
+
+    use_v0 = config["use_v0"]
+    if use_v0:
+        os.environ["VLLM_USE_V1"] = "0"
+        os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+    else:
+        os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
+    inference_task  = config["inference_task"]
+    base_model_path = config["base_model_path"]
+    adapter_path    = config["adapter_path"]
+
+    is_awq = config["use_awq"] or "awq" in base_model_path.lower()
+    if is_awq:
+        quantization, load_format = "awq", "auto"
+    elif config["bits_and_bytes"]:
+        quantization, load_format = "bitsandbytes", "bitsandbytes"
+    else:
+        quantization, load_format = None, "auto"
+
+    llm = LLM(
+        model=base_model_path,
+        tensor_parallel_size=config["gpus_per_instance"],
+        trust_remote_code=True,
+        gpu_memory_utilization=config["gpu_memory_utilization"],
+        max_model_len=config["max_model_len"],
+        max_num_seqs=config["max_num_seqs"],
+        enable_lora=config["use_lora"],
+        max_lora_rank=config["max_lora_rank"],
+        enforce_eager=config["enforce_eager"],
+        enable_prefix_caching=False,
+        enable_sleep_mode=config["enable_sleep_mode"],
+        quantization=quantization,
+        load_format=load_format,
+    )
+
+    lora_request = None
+    if config["use_lora"] and adapter_path:
+        lora_request = LoRARequest("adapter", 1, adapter_path)
+    tokenizer = llm.get_tokenizer()
+
+    if config["load_and_unload"]:
+        try:
+            llm.sleep()
+        except Exception as e:
+            print(f"Sleep failed (ignoring): {e}")
+
+    result_queue.put("READY")
+    counter = 0
+
+    while True:
+        task = task_queue.get()
+        if task is None:
+            break
+        if task == "SLEEP":
+            try:
+                llm.sleep()
+                torch.cuda.empty_cache()
+            except Exception as e:
+                print(f"Error during sleep: {e}")
+            result_queue.put("SLEEP_DONE")
+            continue
+
+        if inference_task == InferenceTask.GENERATE:
+            llm.wake_up()
+
+        chunk, sampling_params, meta = task
+        prompts = [p for _, p in chunk]
+
+        if inference_task == InferenceTask.REWARD:
+            prompts = [
+                tokenizer.decode(tokenizer.encode(p)[:config["max_model_len"] - 1])
+                for p in prompts
+            ]
+            outs = llm.encode(prompts, lora_request=lora_request)
+        elif inference_task == InferenceTask.EMBEDDING:
+            outs = llm.embed(prompts)
+        elif inference_task == InferenceTask.CLASSIFY:
+            outs = llm.classify(prompts)
+        else:
+            if meta is not None:
+                state = load_shared_state_dict(meta).items()
+                try:
+                    if hasattr(llm.llm_engine, 'model_executor'):
+                        llm.llm_engine.model_executor.driver_worker.model_runner.model.load_weights(state)
+                    else:
+                        print("Warning: load_weights not supported in V1 engine yet")
+                except Exception as e:
+                    print(f"Error loading weights: {e}")
+            outs = llm.chat(prompts, sampling_params=sampling_params, lora_request=lora_request)
+            counter += 1
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        if config["load_and_unload"]:
+            llm.sleep()
+
+        result_queue.put([(idx, out) for (idx, _), out in zip(chunk, outs)])
+
+    # Cleanup
+    from vllm.distributed.parallel_state import destroy_model_parallel, destroy_distributed_environment
+    import contextlib
+    try:
+        del llm
+    except:
+        pass
+    with contextlib.suppress(Exception):
+        destroy_model_parallel()
+    with contextlib.suppress(Exception):
+        destroy_distributed_environment()
+    with contextlib.suppress(Exception):
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+    gc.collect()
+    torch.cuda.empty_cache()
 
 class ParallelvLLMInference:
     def __init__(
@@ -132,7 +256,6 @@ class ParallelvLLMInference:
         return None
 
     def _start_workers(self):
-        """Spawn worker processes and wait until they're READY."""
         if self.use_v0:
             os.environ["VLLM_USE_V1"] = "0"
             os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -142,21 +265,39 @@ class ParallelvLLMInference:
         self.result_queues = [self.ctx.Queue() for _ in range(self.n_instances)]
         self.processes = []
 
+        # ← self 대신 primitive dict만 넘김
+        worker_config = {
+            "base_model_path": self.base_model_path,
+            "adapter_path": self.adapter_path,
+            "gpus_per_instance": self.gpus_per_instance,
+            "gpu_memory_utilization": self.gpu_memory_utilization,
+            "max_model_len": self.max_model_len,
+            "max_num_seqs": self.max_num_seqs,
+            "enforce_eager": self.enforce_eager,
+            "use_lora": self.use_lora,
+            "max_lora_rank": self.max_lora_rank,
+            "load_and_unload": self.load_and_unload,
+            "inference_task": self.inference_task,
+            "bits_and_bytes": self.bits_and_bytes,
+            "use_awq": self.use_awq,
+            "enable_sleep_mode": self.enable_sleep_mode,
+            "use_v0": self.use_v0,
+        }
+
         for idx, gpu_group in enumerate(self.gpu_groups):
             os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_group))
             p = self.ctx.Process(
-                target=self._worker_loop,
+                target=_worker_loop_fn,  # ← self 메서드 아님!
                 args=(
                     gpu_group,
                     self.task_queues[idx],
                     self.result_queues[idx],
-                    self.inference_task,
+                    worker_config,
                 ),
             )
             p.start()
             self.processes.append(p)
 
-        # Wait for each worker to signal "READY"
         for q in self.result_queues:
             q.get()
 
@@ -271,6 +412,7 @@ class ParallelvLLMInference:
         
         return llm.chat(prompts, sampling_params=sampling_params, lora_request=lora_request)
 
+    """
     def _worker_loop(
         self, gpu_group: List[int], task_queue, result_queue, inference_task
     ):
@@ -399,3 +541,4 @@ class ParallelvLLMInference:
         
         gc.collect()
         torch.cuda.empty_cache()
+    """
