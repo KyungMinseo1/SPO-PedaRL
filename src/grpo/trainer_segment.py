@@ -1247,43 +1247,37 @@ class ClassroomSPOTrainer(Trainer):
                         idxs_t = torch.tensor(idxs, device=device)
                         
                         turn_level_vals = []
-                        for b_idx in idxs_t:
-                            mask_row = assistant_mask_bool[b_idx]  # (L,)
-                            adv_row = adv[b_idx]
-                            vals = adv_row[mask_row]
-                            if vals.numel() > 0:
-                                unique_vals = vals[torch.cat([
-                                    torch.tensor([True], device=device),
-                                    vals[1:] != vals[:-1]
-                                ])]
-                                turn_level_vals.append(unique_vals)
+                        for b_idx in idxs_t.tolist():
+                            for turn in node_advantages[b_idx]:
+                                if not turn.get("is_padding", False):
+                                    turn_level_vals.append(turn["accuracy_advantage"])
                         
-                        if not turn_level_vals:
-                            continue
-                        turn_level_vals = torch.cat(turn_level_vals)
-                        if turn_level_vals.numel() < 2:
+                        if len(turn_level_vals) < 2:
                             continue
                         
+                        turn_level_vals = torch.tensor(turn_level_vals, device=device)
                         mean = turn_level_vals.mean()
                         std = turn_level_vals.std().clamp(min=1e-4)
                         mask = assistant_mask_bool[idxs_t]
                         adv[idxs_t] = torch.where(mask, (adv[idxs_t] - mean) / std, adv[idxs_t])
+
                 else:
                     turn_level_vals = []
-                    for b_idx in range(adv.shape[0]):
+                    for b_idx in range(len(node_advantages)):
                         if padding_mask[b_idx]:
                             continue
-                        mask_row = assistant_mask_bool[b_idx]
-                        vals = adv[b_idx][mask_row]
-                        if vals.numel() > 0:
-                            unique_vals = vals[torch.cat([
-                                torch.tensor([True], device=device),
-                                vals[1:] != vals[:-1]
-                            ])]
-                            turn_level_vals.append(unique_vals)
+                        for turn in node_advantages[b_idx]:
+                            if not turn.get("is_padding", False):
+                                key = {
+                                    "pedagogical_alignment": "pedagogical_advantage",
+                                    "think": "think_advantage",
+                                    "length": "length_advantage",
+                                    "end_of_conversation": "end_of_conversation_advantage",
+                                }[reward]
+                                turn_level_vals.append(turn[key])
                     
-                    if turn_level_vals and torch.cat(turn_level_vals).numel() >= 2:
-                        turn_level_vals = torch.cat(turn_level_vals)
+                    if len(turn_level_vals) >= 2:
+                        turn_level_vals = torch.tensor(turn_level_vals, device=device)
                         mean = turn_level_vals.mean()
                         std = turn_level_vals.std().clamp(min=1e-4)
                         adv = torch.where(assistant_mask_bool, (adv - mean) / std, adv)
