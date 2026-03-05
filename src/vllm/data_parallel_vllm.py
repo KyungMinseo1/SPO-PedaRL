@@ -69,11 +69,14 @@ def _worker_loop_fn(gpu_group, task_queue, result_queue, config):
         lora_request = LoRARequest("adapter", 1, adapter_path)
     tokenizer = llm.get_tokenizer()
 
+    is_sleeping = False
+
     if config["load_and_unload"]:
         try:
             llm.sleep()
+            is_sleeping = True
         except Exception as e:
-            print(f"Sleep failed (ignoring): {e}")
+            print(f"Sleep failed: {e}")
 
     result_queue.put("READY")
     counter = 0
@@ -84,15 +87,19 @@ def _worker_loop_fn(gpu_group, task_queue, result_queue, config):
             break
         if task == "SLEEP":
             try:
-                llm.sleep()
-                torch.cuda.empty_cache()
+                if not is_sleeping:
+                    llm.sleep()
+                    torch.cuda.empty_cache()
+                    is_sleeping = True
             except Exception as e:
                 print(f"Error during sleep: {e}")
             result_queue.put("SLEEP_DONE")
             continue
 
         if inference_task == InferenceTask.GENERATE:
-            llm.wake_up()
+            if is_sleeping: 
+                llm.wake_up()
+                is_sleeping = False
 
         chunk, sampling_params, meta = task
         prompts = [p for _, p in chunk]
@@ -123,7 +130,9 @@ def _worker_loop_fn(gpu_group, task_queue, result_queue, config):
         gc.collect()
         torch.cuda.empty_cache()
         if config["load_and_unload"]:
-            llm.sleep()
+            if not is_sleeping:
+                llm.sleep()
+                is_sleeping = True
 
         result_queue.put([(idx, out) for (idx, _), out in zip(chunk, outs)])
 
@@ -287,7 +296,7 @@ class ParallelvLLMInference:
         for idx, gpu_group in enumerate(self.gpu_groups):
             os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_group))
             p = self.ctx.Process(
-                target=_worker_loop_fn,  # ← self 메서드 아님!
+                target=_worker_loop_fn,
                 args=(
                     gpu_group,
                     self.task_queues[idx],
