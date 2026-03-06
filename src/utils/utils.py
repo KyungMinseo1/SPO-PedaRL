@@ -149,8 +149,7 @@ def extract_answer(solution):
 ################################################################################
 from src.vllm.client import (
     get_end_of_conversation_reward,
-    get_accuracy_reward,
-    get_pedagogical_alignment_reward,
+    get_constructivist_reward,
     get_end_rm_reward,
     get_length_reward,
     get_thinking_reward,
@@ -163,17 +162,11 @@ def construct_end_rm_reward_func(server_port: 8000):
 
     return end_rm_reward_func
 
-def construct_accuracy_reward_func(server_port: 8000):
-    def accuracy_reward_func(completions, **kwargs):
-        return get_accuracy_reward(conversations=completions, server_port=server_port)
+def construct_constructivist_reward_func(server_port: 8000):
+    def end_constructivist_reward_func(completions, **kwargs):
+        return get_constructivist_reward(conversations=completions, server_port=server_port)
 
-    return accuracy_reward_func
-
-def construct_pedagogical_alignment_reward_func(server_port: 8000):
-    def pedagogical_alignment_reward_func(completions, **kwargs):
-        return get_pedagogical_alignment_reward(conversations=completions, server_port=server_port)
-
-    return pedagogical_alignment_reward_func
+    return end_constructivist_reward_func
 
 
 def construct_thinking_reward_func(server_port: 8000):

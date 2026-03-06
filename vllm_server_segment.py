@@ -1,0 +1,262 @@
+import os
+import wandb
+import hydra
+import uvicorn
+import threading
+from typing import List
+from fastapi import FastAPI
+from pydantic import BaseModel
+from dotenv import load_dotenv
+from omegaconf import OmegaConf
+from hydra.core.config_store import ConfigStore
+from src.classroom_segment import Classroom, Conversation
+from config.train_rl_model import RLModelTrainingConfig
+from src.utils.utils import init_logger
+logger = init_logger()
+
+import warnings
+
+warnings.filterwarnings("ignore")
+load_dotenv(override=False)
+
+lock = threading.Lock()
+
+cs = ConfigStore.instance()
+cs.store(name="config", node=RLModelTrainingConfig)
+
+classroom: Classroom = None
+config: RLModelTrainingConfig = None
+app = FastAPI()
+
+
+class ConversationSampleRequest(BaseModel):
+    problems: List[str]
+    answers: List[str]
+    meta: dict = {}
+
+
+class RewardRequest(BaseModel):
+    conversations: list[str]
+
+
+@app.post("/sample_conversations")
+def sample_conversations(request: ConversationSampleRequest):
+    """
+    DEPRECATED: Backward compatibility only.
+    Use /sample_nodes for TreeNode-based learning.
+    """
+    # Redirect to sample_nodes
+    return sample_nodes(request)
+
+
+@app.post("/sample_nodes")
+def sample_nodes(request: ConversationSampleRequest):
+    global classroom, config
+    
+    problems = request.problems
+    answers = request.answers
+    meta = request.meta
+
+    reward_list = config.train.reward_list
+    reward_weights = config.train.reward_weights
+
+    active_rewards = [
+        r for r, w in zip(reward_list, reward_weights) if w > 0
+    ]
+    
+    with lock:
+        # Conversations sampling
+        conversations = classroom.sample_conversations(
+            problems=problems,
+            answers=answers,
+            meta=meta,
+            active_rewards=active_rewards
+        )
+
+        # Compute advantages for all nodes in the sampled conversations
+        # lambda_pedagogical = getattr(config, 'pedagogical_advantage_lambda', 1.0)
+        is_think_turn_reward = config.generation.use_thinking and config.generation.convert_think_to_turn_reward
+        
+        node_advantages = classroom.compute_all_advantages(
+            # lambda_pedagogical=lambda_pedagogical,
+            reward_list=reward_list,
+            reward_weights=reward_weights,
+            is_think_turn_reward=is_think_turn_reward
+        ) # Per Node(grouped turn)
+
+    # Using stored trees from classroom class
+    all_nodes = []
+    
+    for problem_idx, tree in classroom.conversation_trees.items():
+        nodes_for_training = tree.get_all_nodes_for_training()
+        all_nodes.extend(nodes_for_training)
+    
+    logger.info(f"Returning {len(all_nodes)} nodes from {len(problems)} problems (no context)")
+
+    if config.logging.wandb:
+        node_metrics = []
+        for node_data in all_nodes:
+            for turn_adv in node_data["node_turn_pairs"]:
+                entry = {
+                    "problem_idx": node_data["problem_idx"],
+                    "node_id": node_data["node_id"],
+                    "turn_idx": turn_adv["turn_idx"],
+                    "student_message": turn_adv["student_message"],
+                    "teacher_message": turn_adv["teacher_message"],
+                    "combined_advantage": turn_adv["combined_advantage"],
+                }
+
+                if "pedagogical_alignment" in active_rewards:
+                    entry["judge_results"] = {
+                        key: [{"reasoning": d.reasoning, "decision": d.decision.name} for d in decisions]
+                        for key, decisions in turn_adv["judge_results"].items()
+                    }
+                    entry["pedagogical_reward"] = turn_adv["pedagogical_reward"]
+                    entry["pedagogical_advantage"] = turn_adv["pedagogical_advantage"]
+
+                if "accuracy" in active_rewards:
+                    entry["accuracy_advantage"] = turn_adv["accuracy_advantage"]
+
+                if "end_of_conversation" in active_rewards:
+                    entry["end_of_conversation_advantage"] = turn_adv["end_of_conversation_advantage"]
+
+                if "length" in active_rewards:
+                    entry["length_advantage"] = turn_adv["length_advantage"]
+
+                if "think" in active_rewards:
+                    entry["think_advantage"] = turn_adv["think_advantage"]
+
+                node_metrics.append(entry)
+        
+        # DataFrame for logging node metrics to Weights & Biases
+        if node_metrics:
+            import pandas as pd
+            df_nodes = pd.DataFrame(node_metrics)
+            df_nodes = df_nodes.astype(str)
+            wandb.log({
+                f"nodes_batch_{len(classroom.conversation_sets)}": wandb.Table(dataframe=df_nodes)
+            })
+
+        df_table = classroom.to_pd_latest()
+        df_table = df_table.astype(str)
+        wandb.log(
+            {
+                f"batch_{len(classroom.conversation_sets)}": wandb.Table(
+                    dataframe=df_table
+                )
+            }
+        )
+    
+    return {
+        "nodes": all_nodes,
+        "total_nodes": len(all_nodes),
+        "node_advantages": node_advantages  # backward compatibility
+    }
+
+
+# TODO: 이제 사용 안되기 때문에 tree에서 직접 reward 추출 형식으로 변형해야 함
+@app.post("/get_end_rm_reward")
+def get_end_rm_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_end_rm_reward(c) for c in conversations]
+    return rewards
+
+@app.post("/get_accuracy_reward")
+def get_accuracy_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_accuracy_reward(c) for c in conversations]
+    return rewards
+
+@app.post("/get_pedagogical_alignment_reward")
+def get_pedagogical_alignment_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_pedagogical_alignment_reward(c) for c in conversations]
+    return rewards
+
+
+@app.post("/get_thinking_reward")
+def get_thinking_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_thinking_reward(c) for c in conversations]
+    return rewards
+
+
+@app.post("/get_end_of_conversation_reward")
+def get_end_of_conversation_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_end_of_conversation_reward(c) for c in conversations]
+    return rewards
+
+
+@app.post("/get_length_reward")
+def get_length_reward(request: RewardRequest):
+    global classroom
+    conversations: list[Conversation] = [
+        classroom.get_conversation_by_text(c) for c in request.conversations
+    ]
+    rewards = [classroom.get_length_reward(c) for c in conversations]
+    return rewards
+
+
+@app.get("/wait_batch")
+def wait_batch():
+    # This endpoint waits (blocks) until the current batch (if any) is finished.
+    with lock:
+        return {"message": "Batch has been run."}
+
+
+@hydra.main(config_path="config/train_rl", version_base=None)
+def main(cfg: RLModelTrainingConfig):
+    global classroom, config
+
+    # We merge the config with the defaults
+    default_config = OmegaConf.structured(RLModelTrainingConfig)
+
+    # Merge loaded config with defaults
+    cfg = OmegaConf.merge(
+        default_config, cfg
+    )  # Unspecified keys will use defaults from RLModelTrainingConfig
+
+    config = cfg
+
+    if cfg.logging.wandb:
+        wandb.init(
+            project=cfg.logging.wandb_project + "-server",
+            name=cfg.logging.wandb_run_name,
+            entity=cfg.logging.wandb_entity,
+            group=cfg.logging.run_group,
+            tags=cfg.logging.wandb_tags,
+            config=OmegaConf.to_object(cfg),
+        )
+
+    hydra_cfg = hydra.core.hydra_config.HydraConfig.get()
+    classroom = Classroom(
+        cfg.student_model,
+        cfg.teacher_model,
+        cfg.judge_model,
+        cfg.reward_model,
+        cfg.generation,
+        os.path.join(cfg.logging.save_dir, "policy"),
+        log_file_path=None,  # hydra_cfg['runtime']['output_dir']
+    )
+
+    uvicorn.run(app, host="0.0.0.0", port=cfg.generation.server_port)
+
+
+if __name__ == "__main__":
+    main()

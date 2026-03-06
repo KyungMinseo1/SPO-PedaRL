@@ -5,9 +5,6 @@ import os
 import hydra
 import wandb
 import torch
-import math
-import json
-import hashlib
 from omegaconf import OmegaConf
 from hydra.core.config_store import ConfigStore
 from config.train_rl_model import RLModelTrainingConfig
@@ -16,27 +13,19 @@ from dotenv import load_dotenv
 from transformers import AutoTokenizer
 from peft import LoraConfig as PeftLoraConfig
 from datasets import Dataset
-
-# from src.grpo.config import ClassroomGRPOConfig
-# from src.gdpo.config import ClassroomGDPOConfig
-from src.grpo.config_segment import ClassroomSPOConfig
-
-# from src.grpo.trainer import ClassroomGRPOTrainer
-# from src.gdpo.trainer import ClassroomGDPOTrainer
-from src.grpo.trainer_segment import ClassroomSPOTrainer
-
+from src.grpo.config import ClassroomGRPOConfig
+from src.grpo.trainer import ClassroomGRPOTrainer
 from src.utils.utils import (
     construct_end_of_conversation_reward_func,
-    construct_accuracy_reward_func,
-    construct_pedagogical_alignment_reward_func,
-    # construct_end_rm_reward_func,
+    construct_constructivist_reward_func,
+    construct_end_rm_reward_func,
     construct_length_reward_func,
     construct_thinking_reward_func,
     init_logger,
 )
 import warnings
 
-from utils.data import load_datasets, load_whole_datasets
+from utils.data import load_datasets
 
 warnings.filterwarnings("ignore")
 load_dotenv()
@@ -66,24 +55,6 @@ def main(cfg: RLModelTrainingConfig):
 
     set_seed(cfg.seed)
 
-    assert len(train_config.reward_list) == len(train_config.reward_weights), "Your presented reward list & reward weights have different size. Please check your reward list again."
-
-    # TODO: Should change Reward Dictionary
-    """
-    reward_dict = {
-        "accuracy": construct_accuracy_reward_func(cfg.generation.server_port),
-        "pedagogical alignment": construct_pedagogical_alignment_reward_func(cfg.generation.server_port),
-        "thinking": construct_thinking_reward_func(cfg.generation.server_port),
-        "end of conversation": construct_end_of_conversation_reward_func(cfg.generation.server_port),
-        "length": construct_length_reward_func(cfg.generation.server_port),
-    }
-    reward_func_list = [
-        reward_dict[reward_name]
-        for reward_name in train_config.reward_list
-        if reward_dict.get(reward_name, None) is not None
-    ]
-    """
-
     kwargs = [InitProcessGroupKwargs(timeout=timedelta(hours=10))]
     accelerator = Accelerator(kwargs_handlers=kwargs)
 
@@ -102,7 +73,7 @@ def main(cfg: RLModelTrainingConfig):
     model_kwargs = dict(
         trust_remote_code=True,
         attn_implementation="sdpa",
-        dtype=torch_dtype,
+        torch_dtype=torch_dtype,
         use_cache=False if train_config.gradient_checkpointing else True,
     )
     tokenizer = AutoTokenizer.from_pretrained(
@@ -113,112 +84,9 @@ def main(cfg: RLModelTrainingConfig):
     # Load the datasets
     #############################################################################
 
-    def load_sample_ids(path: str | None) -> set[str]:
-        if path is None or path == "":
-            return set()
-
-        if not os.path.exists(path):
-            logger.info(f"Sample ID file not found, skipping exclude: {path}")
-            return set()
-
-        try:
-            if path.endswith(".json"):
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                return {str(sample_id) for sample_id in loaded}
-
-            with open(path, "r", encoding="utf-8") as f:
-                return {line.strip() for line in f if line.strip() != ""}
-        except Exception as e:
-            raise ValueError(f"Failed to load sample ids from {path}: {e}")
-
-    def save_sample_ids(path: str | None, sample_ids: list[str]) -> None:
-        if path is None or path == "":
-            return
-
-        save_dir = os.path.dirname(path)
-        if save_dir != "":
-            os.makedirs(save_dir, exist_ok=True)
-
-        existing_ids = load_sample_ids(path)
-        merged_ids = existing_ids.union({str(sample_id) for sample_id in sample_ids})
-
-        if path.endswith(".json"):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(sorted(merged_ids), f, ensure_ascii=False, indent=2)
-        else:
-            with open(path, "w", encoding="utf-8") as f:
-                for sample_id in sorted(merged_ids):
-                    f.write(sample_id + "\n")
-
-    def attach_sample_id(example):
-        for key in ["id", "problem_id", "question_id", "uid", "uuid"]:
-            if key in example and example[key] is not None:
-                return {"__sample_id": str(example[key])}
-
-        problem = str(example.get("problem", ""))
-        answer = str(example.get("answer", ""))
-        sample_id = hashlib.sha1(f"{problem}\n<SEP>\n{answer}".encode("utf-8")).hexdigest()
-        return {"__sample_id": sample_id}
-
     logger.info(f"Loading datasets from {data_config.train_datasets}")
-    # train_dataset, _ = load_datasets(data_config, cfg.seed)
-    train_dataset, _ = load_whole_datasets(data_config, cfg.seed)
+    train_dataset, _ = load_datasets(data_config, cfg.seed)
     logger.info(f"Loaded {len(train_dataset)} training examples")
-
-    if data_config.lower_bound_solve_rate is not None:
-        logger.info(f"Filtering training dataset with solve rate lower bound: {data_config.lower_bound_solve_rate}")
-        train_dataset = train_dataset.filter(lambda x: x["llama8b_solve_rate"] >= data_config.lower_bound_solve_rate)
-        logger.info(f"{len(train_dataset)} training examples remaining after filtering with solve rate lower bound of {data_config.lower_bound_solve_rate}")
-
-    train_dataset: Dataset = train_dataset.map(
-        attach_sample_id, num_proc=4, desc="Attaching sample IDs"
-    )
-
-    excluded_sample_ids = load_sample_ids(data_config.exclude_sample_ids_path)
-    if len(excluded_sample_ids) > 0:
-        before_exclude = len(train_dataset)
-        logger.info(
-            f"Excluding {len(excluded_sample_ids)} used sample IDs from {data_config.exclude_sample_ids_path}"
-        )
-        train_dataset = train_dataset.filter(
-            lambda x: x["__sample_id"] not in excluded_sample_ids,
-            desc="Excluding used sample IDs",
-        )
-        logger.info(
-            f"{len(train_dataset)} training examples remaining after exclusion (removed {before_exclude - len(train_dataset)})"
-        )
-
-    max_train_examples = data_config.max_train_examples
-    skip_first_samples = max(0, cfg.skip_first_samples)
-
-    if max_train_examples is None or max_train_examples == -1:
-        start_index = min(skip_first_samples, len(train_dataset))
-        end_index = len(train_dataset)
-    else:
-        start_index = min(skip_first_samples, len(train_dataset))
-        end_index = min(len(train_dataset), skip_first_samples + max_train_examples)
-
-    if start_index >= end_index:
-        raise ValueError(
-            "No training examples left after applying skip_first_samples/max_train_examples. "
-            f"dataset_size={len(train_dataset)}, skip_first_samples={skip_first_samples}, "
-            f"max_train_examples={max_train_examples}"
-        )
-
-    train_dataset = train_dataset.select(range(start_index, end_index))
-    logger.info(
-        f"Selected training examples in range [{start_index}, {end_index}) -> {len(train_dataset)} examples"
-    )
-
-    selected_sample_ids = train_dataset["__sample_id"]
-    save_sample_ids(data_config.save_selected_sample_ids_path, selected_sample_ids)
-    if data_config.save_selected_sample_ids_path is not None and data_config.save_selected_sample_ids_path != "":
-        logger.info(
-            f"Saved {len(selected_sample_ids)} selected sample IDs to {data_config.save_selected_sample_ids_path}"
-        )
-
-    train_dataset = train_dataset.remove_columns("__sample_id")
 
     def apply_template(example):
         problem = example["problem"]
@@ -229,6 +97,18 @@ def main(cfg: RLModelTrainingConfig):
     train_dataset: Dataset = train_dataset.map(
         apply_template, num_proc=4, desc="Applying template"
     )
+
+    #############################################################################
+    # Rewards
+    #############################################################################
+
+    # end_rm_reward = construct_end_rm_reward_func(cfg.generation.server_port)
+    constructivist_reward = construct_constructivist_reward_func(cfg.generation.server_port)
+    thinking_reward = construct_thinking_reward_func(cfg.generation.server_port)
+    end_of_conversation_reward = construct_end_of_conversation_reward_func(
+        cfg.generation.server_port
+    )
+    length_reward = construct_length_reward_func(cfg.generation.server_port)
 
     #############################################################################
     # PEFT Config
@@ -245,59 +125,25 @@ def main(cfg: RLModelTrainingConfig):
         )
 
     #############################################################################
-    # Initializing num_generations
-    #############################################################################
-
-        # For TreeNode, each node is one "generation"
-        #
-        # Level 0: branch_size nodes
-        # Level 1: branch_size^2 nodes
-        # Level 2: branch_size^3 nodes
-        # Total: branch_size + branch_size^2 + branch_size^3
-        #      = branch_size * (1 + branch_size + branch_size^2)
-        #      = branch_size * (branch_size^levels - 1) / (branch_size - 1)
-        #
-        # levels = ceil(((max_turns + 1) // 2) / max_group_size)
-
-    max_turns = cfg.generation.max_turns
-    max_group_size = cfg.generation.max_group_size
-    branch_size = cfg.generation.branch_size
-    num_levels = math.ceil((max_turns + 1) / 2 / max_group_size)
-    if branch_size == 1:
-        spo_num_generations = num_levels  # Degenerate case: a single chain of generations
-    else:
-        spo_num_generations = branch_size * ((branch_size**num_levels - 1) // (branch_size - 1))
-
-    logger.info(
-        f"TreeNode-based learning: {num_levels} levels, "
-        f"branch_size={branch_size}, "
-        f"total maximum nodes={spo_num_generations}"
-    )
-
-    #############################################################################
     # Training
     #############################################################################
 
-    trainer = ClassroomSPOTrainer(
-    # trainer = ClassroomGDPOTrainer(
+    trainer = ClassroomGRPOTrainer(
         model=model_config.model_name_or_path,
-        # reward_funcs=reward_func_list,
-        # reward_weights=train_config.reward_weights,
-        # NOTE: # Using SPO makes auto num_generations calculation possible, which is more convenient for training with tree nodes.
-        args=ClassroomSPOConfig(
-        # args=ClassroomGDPOConfig(
-            gradient_accumulation_steps=(
-                math.ceil(spo_num_generations * cfg.train.number_of_problems_per_batch
-                        / cfg.train.per_device_train_batch_size
-                        / accelerator.num_processes)
-                if cfg.train.top_k_adv is None
-                else (cfg.train.top_k_adv * cfg.train.number_of_problems_per_batch
-                      // accelerator.num_processes
-                      // cfg.train.per_device_train_batch_size)
-            ),
-            number_of_problems_per_batch=cfg.train.number_of_problems_per_batch,
-            num_generations=spo_num_generations,
+        reward_funcs=[
+            # end_rm_reward,
+            constructivist_reward,
+            thinking_reward,
+            end_of_conversation_reward,
+            length_reward,
+        ],
+        args=ClassroomGRPOConfig(
+            gradient_accumulation_steps=cfg.train.num_samples_per_problem
+            * cfg.train.number_of_problems_per_batch
+            // cfg.train.per_device_train_batch_size
+            // accelerator.num_processes,
             gradient_checkpointing=train_config.gradient_checkpointing,
+            num_generations=cfg.train.num_samples_per_problem,
             per_device_train_batch_size=cfg.train.per_device_train_batch_size,
             num_iterations=cfg.train.mu,
             epsilon=cfg.train.epsilon,
@@ -328,11 +174,6 @@ def main(cfg: RLModelTrainingConfig):
             batch_size_reference_model=cfg.train.batch_size_ref_model,
             save_policy_to_disk_every_n_steps=cfg.train.save_policy_to_disk_every_n,
             peft_config=peft_config,
-            top_k_adv=cfg.train.top_k_adv,
-            normalize_tree_advantages=cfg.train.normalize_tree_advantages,
-            reward_list=train_config.reward_list,
-            reward_weights=train_config.reward_weights,
-            is_think_turn_reward=cfg.generation.convert_think_to_turn_reward,
         ),
         train_dataset=train_dataset,
         processing_class=tokenizer,

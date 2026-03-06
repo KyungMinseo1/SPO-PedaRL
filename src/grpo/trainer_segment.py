@@ -78,7 +78,7 @@ from trl.trainer.utils import (
 )
 from vllm import RequestOutput
 from src.utils.utils import incremental_state_dict
-from src.vllm.client import sample_conversations, sample_nodes, wait_batch
+from src.vllm.client_segment import sample_conversations, sample_nodes, wait_batch
 from src.utils.shared_memory import create_shared_state_dict, get_shareable_version
 from src.utils.utils import init_logger, _ForwardRedirection
 from src.grpo.config_segment import ClassroomSPOConfig

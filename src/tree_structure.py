@@ -1,7 +1,3 @@
-"""
-개선된 Tree 구조 - 즉각 저장 방식에 최적화
-"""
-
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum

@@ -113,8 +113,6 @@ class GenerationConfig:
     max_tokens_per_judge_attempt: int = 2048
     tokenizer_to_use: str = "Qwen/Qwen2.5-7B-Instruct"
 
-    # NOTE: new segment group size hyperparams
-    max_group_size: int = 3
     branch_size: int = 3
 
     # Number of attempts we will average over the final student generation.
@@ -215,6 +213,8 @@ class TrainConfig:
     top_k_adv: Optional[int] = None  # If specified, we will use top-k advantage sampling during training.
 
     normalize_tree_advantages: bool = False  # Whether to normalize the tree advantages before computing the loss.
+
+    accuracy_reward_gamma: float = 0.999 # Decay factor for accuracy reward.
 
 @dataclass
 class HuggingFaceConfig:
