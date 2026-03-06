@@ -97,8 +97,8 @@ class Conversation:
         self.student_turns = 0
 
         # NOTE: Branching related attributes
-        self.auxilary_teacher_message = defaultdict(List[dict])  # To store teacher messages that are generated after the main teacher message in the same turn.
-        self.turn_pairs = defaultdict(List[TurnPair])
+        self.auxilary_teacher_message = defaultdict(list)  # To store teacher messages that are generated after the main teacher message in the same turn.
+        self.turn_pairs = defaultdict(list)
 
         problem_hash = hash(problem)
         self.type: ConversationType = (
