@@ -5,3 +5,4 @@ outputs
 __pycache__
 checkpoints
 .idea
+dataset
