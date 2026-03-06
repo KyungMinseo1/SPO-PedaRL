@@ -506,7 +506,7 @@ class Conversation:
                     self.state = ConversationState.JUDGE_TURN
             else:
                 # Auxiliary branch turn: store separately, do NOT change state
-                self.auxilary_teacher_message[self.teacher_turns].append({"role": "teacher", "content": content})
+                self.auxilary_teacher_message[self.teacher_turns -1].append({"role": "teacher", "content": content})
                 return  # Skip the max-token check below; state must not change
         elif self.state == ConversationState.STUDENT_TURN:
             if self.type == ConversationType.ATTEMPTED and len(self.conversation) == 0:
@@ -1151,12 +1151,6 @@ class Classroom:
                 ConversationState.TEACHER_TURN,
                 ConversationState.STUDENT_TURN,
             ]:
-                logger.info(
-                    ("=" * 10)
-                    + f"Executing turn {round_counter}: {'Teacher' if state_to_process == ConversationState.TEACHER_TURN else 'Student'}"
-                    + ("=" * 10)
-                )
-
                 start_time = time.time()
 
                 # We get all conversations that are in the state_to_process state
@@ -1167,6 +1161,12 @@ class Classroom:
                 ]
                 if len(conversations_to_process) == 0:
                     continue
+
+                logger.info(
+                    ("=" * 10)
+                    + f"Executing turn {round_counter}: {'Teacher' if state_to_process == ConversationState.TEACHER_TURN else 'Student'}"
+                    + ("=" * 10)
+                )
 
                 # We get the responses from the model using our helper functions.
                 if state_to_process == ConversationState.TEACHER_TURN:
