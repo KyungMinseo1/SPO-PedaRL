@@ -467,17 +467,19 @@ class Conversation:
                 raise ValueError("You need to give rule prompts to get the constructivist judge decisions.")
             return [
                 (
-                    {
-                        "role": "user",
-                        "content": Template(
-                            open(
-                                self.generation_cfg.judges_rules_constructivist_prompts_paths[rule_name]
-                            ).read()
-                        ).render(
-                            n_turns=min(self.generation_cfg.n_turns_to_sample, turn_idx+1),
-                            conversation=self._get_hidden_conversation(turn_idx, turn, self.generation_cfg.n_turns_to_sample)
-                        ),
-                    },
+                    [
+                        {
+                            "role": "user",
+                            "content": Template(
+                                open(
+                                    self.generation_cfg.judges_rules_constructivist_prompts_paths[rule_name]
+                                ).read()
+                            ).render(
+                                n_turns=min(self.generation_cfg.n_turns_to_sample, turn_idx+1),
+                                conversation=self._get_hidden_conversation(turn_idx, turn, self.generation_cfg.n_turns_to_sample)
+                            ),
+                        }
+                    ],
                     turn
                 )
                 for turn_idx, turns in self.turn_pairs.items()
