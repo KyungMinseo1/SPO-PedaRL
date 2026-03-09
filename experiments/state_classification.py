@@ -64,10 +64,20 @@ def main(cfg: DictConfig) -> None:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        n = max(1, int(len(data) * dataset_cfg.ratio))
-        data = data[:n]
+        seen: dict = {}
         for item in data:
-            all_turn_segments.extend(item["Turn_Split"])
+            problem = item.get("Problem")
+            if problem not in seen:
+                seen[problem] = []
+            seen[problem].append(item)
+
+        max_per = dataset_cfg.max_turn_splits_per_problem
+        n = max(1, int(len(seen) * dataset_cfg.ratio))
+        problems = list(seen.items())[:n]
+        logger.info(f"Unique problems: {len(problems)} (max_turn_splits_per_problem={max_per})")
+        for _, items in problems:
+            for item in (items if max_per < 0 else items[:max_per]):
+                all_turn_segments.extend(item["Turn_Split"])
 
     all_turn_segments = all_turn_segments[cfg.skip_first_samples :]
     logger.info(f"Total turn segments to classify: {len(all_turn_segments)}")

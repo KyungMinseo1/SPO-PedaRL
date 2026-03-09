@@ -55,6 +55,7 @@ class GenerationConfig:
 class Dataset:
     name_or_path: str = "../Wandb/all_conversations_turn_segmented.json"
     ratio: float = 1.0
+    max_turn_splits_per_problem: int = -1  # -1 = unlimited
 
 @dataclass
 class DatasetConfig:

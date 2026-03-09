@@ -23,5 +23,9 @@ logging:
 
 generation:
   use_experimental_shared_memory: false
+  # n_turns_to_sample: 8
 
-  n_turns_to_sample: 8
+dataset:
+  train_datasets:
+    - name_or_path: ../Wandb/all_conversations_turn_segmented.json
+      max_turn_splits_per_problem: 1
