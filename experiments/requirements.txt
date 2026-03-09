@@ -1,0 +1,29 @@
+# vLLM
+vllm>=0.13.0
+
+# Core ML
+transformers
+accelerate
+deepspeed
+huggingface_hub
+
+# Config
+hydra-core==1.3.2
+omegaconf==2.3.0
+
+# API / Server
+fastapi
+uvicorn
+pydantic
+requests>=2.31.0
+
+# Inference providers
+openai>=1.0.0
+google-generativeai
+
+# Data / Logging
+pandas
+wandb
+tqdm
+jinja2
+python-dotenv>=1.0.0

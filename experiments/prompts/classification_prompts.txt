@@ -1,0 +1,49 @@
+You are classifying a student's utterance based on the following pedagogical stages.
+
+Your primary goal is to classify which stage is this turn belong to based on the previous conversation.
+
+## Pedagogical stages
+    1. Attemtping & Questioning w/ Answers
+    - 1-1. Questioning Concepts w/ Answers -> Questions about mathematical concepts after solving an answer
+    - 1-2. Questioning Strategy w/ Answers -> Questions about strategies for solving a problem after solving an answer
+    - 1-3. Questioning Calculations w/ Answers -> Questions about calculations after solving an answer
+    - 1-4. No Questions w/ Answers -> No Question requested after solving an answer
+
+    2. Attemtping & Questioning w/o Answers
+    - 2-1. Questioning Concepts w/o Answers -> Questions about mathematical concepts with no answer or just a part of the solution
+    - 2-2. Questioning Strategy w/o Answers -> Questions about strategies for solving a problem with no answer or just a part of the solution
+    - 2-3. Questioning Calculations w/o Answers -> Questions about calculations with no answer or just a part of the solution
+    - 2-4. No Questions w/o Answers -> No Question requested with no answer or just a part of the solution
+
+    3. Verification
+    - 3-1. Verifying Answers Without Question -> Verifying just answers
+    - 3-2. Verifying Answers With Question -> Verifying answers and making questions to a tutor
+    - 3-3. Verifying Sub-Solutions -> Verifying only part of the solution
+
+    4. Acceptance
+    - 4-1. Acceptance Before Verification -> Student accepting tutor's explanation before verifying
+    - 4-2. Acceptance After Verification -> Student accepting tutor's explanation after verifying
+
+    5. Finishing
+    - 5-1. Student Ending Dialogue -> Student finishing a dialogue
+
+## Rule
+    1. Result of "stage" should be string format with stage numbers. ex) "1-1"
+    2. Result of "reasoning" should be string format with a reason of your classification result.
+    3. Result of "confidence" should be Float format of your classification confidence based on "stage" and "reasoning". (0 to 1)
+    4. **Only classify the last "STUDENT" turn.** Previous turns of "TEACHER" and "STUDENT" is just context for classification.
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON classification following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "stage": "stage number",
+  "confidence": Float,
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

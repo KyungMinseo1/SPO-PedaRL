@@ -184,14 +184,16 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                         "is_main_turn": turn_pair["is_main_turn"],
                         "student_message": turn_pair["student_message"],
                         "teacher_message": turn_pair["teacher_message"],
+                        "judge_results": turn_pair["judge_results"],
                         "pedagogical_reward": turn_pair["pedagogical_reward"],
-                        "length_reward": turn_pair["length_reward"],
                         "think_reward": turn_pair["think_reward"],
-                        "accuracy_advantage": turn_pair["accuracy_advantage"],
+                        "length_reward": turn_pair["length_reward"],                      
                         "end_of_conversation_advantage": turn_pair["end_of_conversation_advantage"],
+                        "accuracy_advantage": turn_pair["accuracy_advantage"],
                         "pedagogical_advantage": turn_pair["pedagogical_advantage"],
-                        "length_advantage": turn_pair["length_advantage"],
                         "think_advantage": turn_pair["think_advantage"],
+                        "length_advantage": turn_pair["length_advantage"],
+                        "end_of_conversation_advantage": turn_pair["end_of_conversation_advantage"],
                     }
                 )
         df_turns = pd.DataFrame(turn_rows)
@@ -266,6 +268,7 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                 )
             
         df = pd.DataFrame(rows)
+
         wandb.log(
             {f"batch_{len(classroom.conversation_sets)}": wandb.Table(dataframe=df.astype(str))}
         )
