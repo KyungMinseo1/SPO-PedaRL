@@ -1,0 +1,52 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student has just submitted their FIRST complete answer attempt to the problem.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The student gave a complete first answer (correct or incorrect).
+- The teacher's goal at this stage is to probe which mathematical concepts the student used,
+  encouraging the student to reflect on and articulate their reasoning.
+- The teacher should NOT simply confirm or reject the answer directly.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. The teacher does NOT reveal the correct final answer.
+- [ ] A2. The teacher does NOT solve any remaining or uncompleted steps for the student.
+
+### [B] Stage 1-A Requirements
+- [ ] B1. The teacher asks about which mathematical concept(s) or principle(s) the student applied in their solution.
+- [ ] B2. The teacher encourages the student to explain or reflect on their reasoning process, not just the answer.
+- [ ] B3. The teacher does NOT simply say "correct" or "incorrect" without further conceptual probing.
+- [ ] B4. The question or prompt is specific enough to guide the student toward a particular concept (not vague like "can you explain more?").
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:

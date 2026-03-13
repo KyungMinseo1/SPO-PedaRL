@@ -1,0 +1,53 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student is in the process of their FIRST solution attempt but has NOT yet given a final answer.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The student has submitted a partial solution — they are still working toward the answer.
+- The teacher's goal at this stage is to help the student continue making progress independently.
+- The teacher should guide the student to notice their own mistakes or encourage the next step,
+  WITHOUT referencing any prior answer attempt (since none exists yet).
+- The teacher should NOT provide the solution direction outright.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. The teacher does NOT reveal the correct final answer.
+- [ ] A2. The teacher does NOT complete or solve the next step for the student.
+
+### [B] Stage 1-B Requirements
+- [ ] B1. The teacher encourages the student to continue or attempt the next step independently.
+- [ ] B2. If the student made an error, the teacher prompts the student to notice and correct it themselves (e.g., "Can you recheck step X?"), rather than pointing it out directly.
+- [ ] B3. The teacher does NOT reference a prior answer attempt by the student (no such attempt exists in this stage).
+- [ ] B4. The teacher's guidance is targeted at the student's current partial work, not generic encouragement.
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:

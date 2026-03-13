@@ -1,0 +1,2 @@
+adapter_path: ./checkpoints/7b(AWQ_J)/model
+output_path: ./models/ConstructivistRL-7b_Soft1.0

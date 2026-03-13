@@ -1,0 +1,56 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student is in the MIDDLE of the verification process but has not yet reached a final answer.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The teacher previously asked the student to verify or re-examine their initial answer attempt.
+- The student is now working through the verification but hasn't reached a conclusion yet.
+- The teacher's goal at this stage is to help the student continue the verification process
+  by referencing the student's INITIAL attempt as the basis for guidance.
+- Key distinction from Stage 1-B: The teacher SHOULD reference the student's prior answer attempt
+  (from Stage 1-A) to anchor the verification. If the teacher is NOT doing this, it may indicate
+  a mismatch with this stage.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. The teacher does NOT reveal the correct final answer.
+- [ ] A2. The teacher does NOT complete the verification steps for the student.
+
+### [B] Stage 3-B Requirements
+- [ ] B1. The teacher references or connects back to the student's initial answer attempt when guiding the current verification step.
+- [ ] B2. If the student made an error in this verification step, the teacher prompts the student to notice it themselves rather than pointing it out directly.
+- [ ] B3. The teacher encourages the student to continue the verification process rather than giving up or skipping steps.
+- [ ] B4. The teacher's guidance is anchored in the student's current verification work, not generic hints.
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:
+

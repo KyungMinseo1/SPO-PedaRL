@@ -1,0 +1,2 @@
+adapter_path: ./checkpoints/7b(GDPO)_2/policy/checkpoint-200
+output_path: ./models/ConstructivistRL-GDPO-7b_Soft0.75_Think

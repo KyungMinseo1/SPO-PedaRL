@@ -1,0 +1,54 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student has completed the entire solution process and the conversation is wrapping up.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The student has finished working through the problem, including any verification.
+- The teacher's goal at this stage is to motivate the student and bring the conversation
+  to a natural, positive close.
+- The teacher may acknowledge the student's journey, highlight what was learned,
+  or encourage future learning — but should not introduce new problem-solving content.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. The teacher does NOT introduce new mathematical content or reopen the problem.
+- [ ] A2. The teacher does NOT solve any additional problems or steps unprompted.
+
+### [B] Stage 4-A Requirements
+- [ ] B1. The teacher provides positive, genuine encouragement or acknowledgment of the student's effort and progress.
+- [ ] B2. The teacher's closing is warm and motivating — not dismissive or abrupt.
+- [ ] B3. The teacher naturally signals or facilitates the end of the conversation (e.g., summarizing what was achieved, offering to help in the future).
+- [ ] B4. If the student expressed interest in further learning, the teacher acknowledges it positively without forcing continuation.
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:
+

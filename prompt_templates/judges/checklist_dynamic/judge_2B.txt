@@ -1,0 +1,54 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student does NOT know or is confused about the mathematical concept the teacher asked about.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The teacher previously asked about a specific mathematical concept.
+- The student has shown they do not know, misunderstood, or are confused about the concept.
+- The teacher's goal at this stage is to teach or clarify the concept clearly,
+  so the student can internalize it and later apply it to the problem.
+- This is one of the rare cases where direct explanation from the teacher is appropriate.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. The teacher explains the concept itself but does NOT reveal how it leads to the final answer of the problem.
+- [ ] A2. The teacher does NOT solve any part of the problem while explaining the concept.
+
+### [B] Stage 2-B Requirements
+- [ ] B1. The teacher provides a clear and accurate explanation of the mathematical concept the student was confused about.
+- [ ] B2. The explanation is accessible — the teacher uses examples, analogies, or step-by-step breakdown where helpful.
+- [ ] B3. After explaining, the teacher prompts the student to confirm understanding or try applying the concept (does not just end with the explanation).
+- [ ] B4. The teacher does not dismiss or skip over the student's confusion.
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:
+

@@ -1,0 +1,190 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor).
+
+Your primary goal is to determine whether each pedagogical stages was present in the TEACHER's guidance.
+
+## Pedagogical stages
+### 1. Mistake Checking Stage
+The teacher critically reviews the student's calculation or logical steps to catch potential errors.
+- OK: Teacher points out a suspicious step or asks the student to recheck a SPECIFIC part of their work.
+- REJECT: Teacher accepts the solution without any critical review of individual steps.
+
+### 2. Concept Probing Stage
+The teacher probes the student's understanding of the mathematical concept behind the solution.
+- OK: Teacher asks which concept was applied, requests the student to explain their reasoning, or guides toward articulating the underlying principle.
+- REJECT: Teacher never asks about the concept or reasoning behind the student's solution.
+
+### 3. Verification Stage
+The teacher asks the student to re-solve or re-examine their ENTIRE solution from scratch.
+- OK: Teacher asks the student to redo or walk through the whole solution process again.
+- REJECT: Teacher does not ask for full re-examination after the initial attempt.
+
+### 4. Application Stage
+The teacher introduces a new related problem for the student to apply what they have learned.
+- OK: Teacher provides a new practice problem.
+- REJECT: Teacher ends the conversation without offering any extension problem.
+
+### 5. Summary Stage
+The teacher asks a student to summarize their whole process. Simply praising the student or confirming the answer is NOT considered a summary. The teacher must explicitly ask the student to articulate or reflect.
+- OK: Teacher guides the student to summarize their whole effort.
+- REJECT: Teacher ends the conversation without summarizing what the student learned.
+
+
+## **Examples of correct and incorrect guidance**:
+
+### Example 1 — Mistake Checking: OK
+- Student: "So the answer is 24. I multiplied 6 × 4 × 1 = 24."
+- Teacher: "You're on the right track, but can you double-check the third takeoff specifically? How many runway choices does the last plane actually have?"
+{
+  "decision": {
+    "mistake": "OK"
+  },
+  "reasoning": {
+    "mistake": "The teacher points out a specific step (the third takeoff) that contains a potential error and asks the student to recheck it, without revealing the correct answer."
+  }
+}
+
+### Example 2 — Mistake Checking: REJECT
+- Student: "So the answer is 24. I multiplied 6 × 4 × 1 = 24."
+- Teacher: "Great job! That's correct. Now let's talk about the concept behind this."
+{
+  "decision": {
+    "mistake": "REJECT"
+  },
+  "reasoning": {
+    "mistake": "The teacher accepts the student's answer without reviewing any specific step, even though the calculation contains an error."
+  }
+}
+
+---
+
+### Example 3 — Concept Probing: OK
+- Student: "I got 48 by multiplying 6 × 4 × 2."
+- Teacher: "Nice work. Can you tell me what principle you used to multiply the choices at each step?"
+{
+  "decision": {
+    "concept": "OK"
+  },
+  "reasoning": {
+    "concept": "The teacher asks the student to articulate the underlying mathematical principle (Multiplication Principle) behind their approach."
+  }
+}
+
+### Example 4 — Concept Probing: REJECT
+- Student: "I got 48 by multiplying 6 × 4 × 2."
+- Teacher: "That's correct! Let's now verify your answer by listing a few cases."
+{
+  "decision": {
+    "concept": "REJECT"
+  },
+  "reasoning": {
+    "concept": "The teacher moves on to verification without ever asking about the concept or reasoning behind the student's solution."
+  }
+}
+
+---
+
+### Example 5 — Verification: OK
+- Student: "So the final answer is -1."
+- Teacher: "Good. Can you now walk me through your entire solution from the beginning again to make sure everything holds together?"
+{
+  "decision": {
+    "verification": "OK"
+  },
+  "reasoning": {
+    "verification": "The teacher asks the student to redo the whole solution process from scratch, not just a specific step."
+  }
+}
+
+### Example 6 — Verification: REJECT
+- Student: "So the final answer is -1."
+- Teacher: "That's right! You applied the difference of squares correctly. Would you like to try a similar problem?"
+{
+  "decision": {
+    "verification": "REJECT"
+  },
+  "reasoning": {
+    "verification": "The teacher accepts the answer immediately and moves on without asking for any full re-examination of the solution."
+  }
+}
+
+---
+
+### Example 7 — Application: OK
+- Student: "I understand now. The answer is -1."
+- Teacher: "Great work! Let's try a similar one: calculate 1997 × 2001 - 1999²."
+{
+  "decision": {
+    "application": "OK"
+  },
+  "reasoning": {
+    "application": "The teacher introduces a new related problem for the student to apply what they have learned."
+  }
+}
+
+### Example 8 — Application: REJECT
+- Student: "I understand now. The answer is -1."
+- Teacher: "Excellent! You've done a great job today. Keep practicing on your own!"
+{
+  "decision": {
+    "application": "REJECT"
+  },
+  "reasoning": {
+    "application": "The teacher ends the conversation without providing any extension or application problem."
+  }
+}
+
+---
+
+### Example 9 — Summary: OK
+- Student: "I understand now. The answer is -1."
+- Teacher: "Great! Before we finish, can you explain in your own words why each step was necessary and what you learned from this problem?"
+{
+  "decision": {
+    "summary": "OK"
+  },
+  "reasoning": {
+    "summary": "The teacher asks the student to explain the meaning and reasoning behind each step — not just redo the calculation, but reflect on what they learned."
+  }
+}
+
+### Example 10 — Summary: REJECT
+- Student: "I understand now. The answer is -1."
+- Teacher: "Perfect! You've mastered this. See you next time!"
+{
+  "decision": {
+    "summary": "REJECT"
+  },
+  "reasoning": {
+    "summary": "The teacher ends the conversation without asking the student to summarize or reflect on what they learned."
+  }
+}
+
+---
+
+## **Evaluate the following conversation**:
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON classification following exactly this schema:
+{
+  "decision": {
+    "mistake": "OK or REJECT",
+    "concept": "OK or REJECT",
+    "verification": "OK or REJECT",
+    "application": "OK or REJECT",
+    "summary": "OK or REJECT"
+  },
+  "reasoning": {
+    "mistake": "Was there a checking procedure targeting a specific step?",
+    "concept": "Did the teacher ask about the underlying concept or principle?",
+    "verification": "Was the student asked to redo the entire solution?",
+    "application": "Was a new practice problem introduced?",
+    "summary": "Was the student asked to reflect on and summarize what they learned?"
+  }
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

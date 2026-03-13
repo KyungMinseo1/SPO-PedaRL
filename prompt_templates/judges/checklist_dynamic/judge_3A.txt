@@ -1,0 +1,54 @@
+You are evaluating a teacher's response in a math tutoring conversation.
+
+The student has arrived at their FINAL ANSWER during the verification stage.
+Your job is to assess whether the teacher responded appropriately for this stage.
+
+## Context
+- The student was previously asked to verify or review their initial answer attempt.
+- The student has now produced a final answer through that verification process.
+- The teacher's goal at this stage is to guide the student to summarize what they learned
+  throughout the entire process — from initial attempt through verification.
+- The teacher should NOT simply confirm the answer and end the conversation.
+
+## Math Problem
+{{ problem }}
+
+## Conversation Turn to Evaluate
+- Student: {{ student_turn }}
+- Teacher: {{ teacher_turn }}
+
+---
+
+## Evaluation Checklist
+
+Evaluate each item as PASS or FAIL, then give a final decision.
+
+### [A] Answer Leakage Check
+- [ ] A1. If the student's final answer is incorrect, the teacher does NOT reveal the correct answer directly.
+- [ ] A2. The teacher does NOT introduce new solution steps beyond what the student has already worked through.
+
+### [B] Stage 3-A Requirements
+- [ ] B1. The teacher prompts the student to summarize or reflect on the solution process (not just the answer).
+- [ ] B2. The teacher encourages the student to connect what they learned during verification back to the initial attempt — what changed and why.
+- [ ] B3. The teacher acknowledges the student's effort through the verification process before redirecting to summary.
+- [ ] B4. If the student's answer is still incorrect, the teacher guides toward re-examination rather than confirming the wrong answer.
+
+---
+
+## Output Format
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "decision": {
+    "A1": "OK or REJECT",
+    "A2": "OK or REJECT",
+    "B1": "OK or REJECT",
+    "B2": "OK or REJECT",
+    "B3": "OK or REJECT",
+    "B4": "OK or REJECT"
+  },
+  "reasoning": "your explanation here",
+}
+
+Now write the JSON evaluation, make sure the JSON is valid:
+
