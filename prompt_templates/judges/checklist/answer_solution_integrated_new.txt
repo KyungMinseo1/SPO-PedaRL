@@ -1,0 +1,103 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- NOT reveal the final answer or complete the remaining solution steps directly.
+- Provide feedback on the student's existing work without solving the problem for them.
+- Guide the student through questions, hints, or corrective feedback.
+
+Assess the response based on the following criteria:
+**Does the teacher NOT reveal the answer in this response?**
+**Does the teacher avoid directly solving or working through problem-solving steps themselves?**
+
+## Note:
+- If this turn contains no problem-solving content (e.g., greetings, farewells, motivational exchanges), output OK if the teacher's response is natural and appropriately brief. Output REJECT if it is excessively long or overwhelming even in a non-academic context.
+- A response that briefly acknowledges the student's prior work before asking one question is acceptable — the acknowledgment itself does not count as an additional question or hint.
+- The teacher should pose questions or hints, not execute the reasoning on the student's behalf — even if the final numerical answer is withheld.
+- To receive an **OK**, the teacher's response must satisfy ALL of the following conditions. If ANY condition is violated, you must output **REJECT**.
+
+## Examples of Correct and Incorrect Guidance
+
+### Example 1 – Immediate Disclosure of the Final Answer (Incorrect)
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: The limit is \(\boxed{5}\).
+- Student: Thank you for your support.
+{
+  "reasoning": "The teacher directly reveals the final answer without prompting the student to recall relevant limit concepts or engage in any reasoning process.",
+  "decision": "REJECT"
+}
+
+### Example 2 – Complete Solution Presented
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: First, rewrite it as 5·(sin(5x)/(5x)). Since sin(x)/x → 1 as x → 0, what will be the answer?.
+- Student: Let me find the answer. Since sin(x)/x goes to 1 as x goes to 0, the answer is \\boxed{5}.
+{
+  "reasoning": "The teacher not only walked through every reasoning step themselves but also left only the final arithmetic for the student. Withholding the last numerical answer does not constitute meaningful guidance when all key steps have already been executed by the teacher.",
+  "decision": "REJECT"
+}
+
+### Example 3 – Final Answer Withheld (Guided Reasoning)
+- Student: u = x and dv = e^(2x) dx?
+- Teacher: Nice job. Can you find du and v from here?
+- Student: According to u = x, du is ...
+{
+  "reasoning": "The teacher avoids stating the final answer and instead leads the student through a reasoning process by asking guiding questions, allowing the student to construct the solution independently.",
+  "decision": "OK"
+
+}
+
+### Example 4 - Key Steps Left to the Student
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: Think about how sin(5x)/(5x) behaves as x → 0. Can you rewrite the expression to make use of that?
+- Student: Oh, I see. Since sin(x)/x goes to 1 as x → 0, I can rewrite sin(5x)/x to 5·(sin(5x)/(5x)). Then, ...
+{
+  "reasoning": "The teacher pointed to the relevant idea without completing the solution, leaving the core reasoning step to the student.",
+  "decision": "OK"
+}
+
+### Example 5 – Student Engaged After Guidance
+- Student: I tried factoring but I'm not sure if x² - 4 can be factored further.
+- Teacher: Think about whether x² - 4 fits a special factoring pattern you've seen before. What patterns do you know?
+- Student: Oh, is it the difference of squares? So it would be (x+2)(x-2)?
+{
+  "reasoning": "The teacher withheld the answer and asked a guiding question. The next student turn confirms the student was prompted to think independently and arrived at the answer themselves.",
+  "decision": "OK"
+}
+
+## When <end_of_conversation> is encountered:
+
+### Example 6 – Ends Conversation Before Student Can Engage
+- Student: I rewrote the expression as (x+2)(x+?), but I'm not sure what to do next.
+- Teacher: Good start! If (x+2) is one factor, what value in the blank would give you a constant term of 6 when you expand? <end_of_conversation>
+- Student: [NO NEXT STUDENT TURN]
+{
+  "reasoning": "The teacher asked a question but ended the conversation immediately, preventing the student from engaging with the problem. There is no opportunity left for the student to participate.",
+  "decision": "REJECT"
+}
+
+### Example 7 – Ends Conversation At Proper Time
+- Student: Oh the answer is \\boxed{4}! Thank you for your support. Because of you, I could gain confidence on learning math.
+- Teacher: Well done! You fixed your own misconception and made progress on learning math in your own method. Good job. <end_of_conversation>
+- Student: [NO NEXT STUDENT TURN]
+{
+  "reasoning": "The student had already arrived at the correct answer independently before the conversation ended. The teacher's closing remark is supportive and encouraging. Ending the conversation here is appropriate because the learning objective has been fulfilled — there is nothing left for the student to work through.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+The conversation below shows the last {{n_turns}} turns for context.
+**Evaluate ONLY the final teacher response. Previous turns are provided as context only.**
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:

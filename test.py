@@ -99,4 +99,13 @@ def test_high_score_reward():
         print("\n✅ Cleanup complete")
 
 if __name__ == "__main__":
-    test_high_score_reward()
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B-Instruct-2507", trust_remote_code=True)
+    eos = tokenizer.eos_token_id
+    print(f"eos_token_id type: {type(eos)}, value: {eos}")
+    test_tok = eos if not isinstance(eos, list) else eos[0]
+    print(f"test_tok == eos: {test_tok == eos}")
+    print(f"test_tok in {{eos}}: {test_tok in {eos}}")
+    eos_set = {eos} if not isinstance(eos, list) else set(eos)
+    print(f"test_tok in eos_set: {test_tok in eos_set}")
+    # test_high_score_reward()

@@ -40,6 +40,57 @@ logger = init_logger()
 cs = ConfigStore.instance()
 cs.store(name="config", node=RLModelTrainingConfig)
 
+#############################################################################
+# Load the datasets
+#############################################################################
+
+def load_sample_ids(path: str | None) -> set[str]:
+    if path is None or path == "":
+        return set()
+
+    if not os.path.exists(path):
+        logger.info(f"Sample ID file not found, skipping exclude: {path}")
+        return set()
+
+    try:
+        if path.endswith(".json"):
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            return {str(sample_id) for sample_id in loaded}
+
+        with open(path, "r", encoding="utf-8") as f:
+            return {line.strip() for line in f if line.strip() != ""}
+    except Exception as e:
+        raise ValueError(f"Failed to load sample ids from {path}: {e}")
+
+def save_sample_ids(path: str | None, sample_ids: list[str]) -> None:
+    if path is None or path == "":
+        return
+
+    save_dir = os.path.dirname(path)
+    if save_dir != "":
+        os.makedirs(save_dir, exist_ok=True)
+
+    existing_ids = load_sample_ids(path)
+    merged_ids = existing_ids.union({str(sample_id) for sample_id in sample_ids})
+
+    if path.endswith(".json"):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(sorted(merged_ids), f, ensure_ascii=False, indent=2)
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            for sample_id in sorted(merged_ids):
+                f.write(sample_id + "\n")
+
+def attach_sample_id(example):
+    for key in ["id", "problem_id", "question_id", "uid", "uuid"]:
+        if key in example and example[key] is not None:
+            return {"__sample_id": str(example[key])}
+
+    problem = str(example.get("problem", ""))
+    answer = str(example.get("answer", ""))
+    sample_id = hashlib.sha1(f"{problem}\n<SEP>\n{answer}".encode("utf-8")).hexdigest()
+    return {"__sample_id": sample_id}
 
 @hydra.main(config_path="config/train_rl", version_base=None)
 def main(cfg: RLModelTrainingConfig):
@@ -103,58 +154,6 @@ def main(cfg: RLModelTrainingConfig):
         model_config.model_name_or_path, trust_remote_code=True
     )
 
-    #############################################################################
-    # Load the datasets
-    #############################################################################
-
-    def load_sample_ids(path: str | None) -> set[str]:
-        if path is None or path == "":
-            return set()
-
-        if not os.path.exists(path):
-            logger.info(f"Sample ID file not found, skipping exclude: {path}")
-            return set()
-
-        try:
-            if path.endswith(".json"):
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                return {str(sample_id) for sample_id in loaded}
-
-            with open(path, "r", encoding="utf-8") as f:
-                return {line.strip() for line in f if line.strip() != ""}
-        except Exception as e:
-            raise ValueError(f"Failed to load sample ids from {path}: {e}")
-
-    def save_sample_ids(path: str | None, sample_ids: list[str]) -> None:
-        if path is None or path == "":
-            return
-
-        save_dir = os.path.dirname(path)
-        if save_dir != "":
-            os.makedirs(save_dir, exist_ok=True)
-
-        existing_ids = load_sample_ids(path)
-        merged_ids = existing_ids.union({str(sample_id) for sample_id in sample_ids})
-
-        if path.endswith(".json"):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(sorted(merged_ids), f, ensure_ascii=False, indent=2)
-        else:
-            with open(path, "w", encoding="utf-8") as f:
-                for sample_id in sorted(merged_ids):
-                    f.write(sample_id + "\n")
-
-    def attach_sample_id(example):
-        for key in ["id", "problem_id", "question_id", "uid", "uuid"]:
-            if key in example and example[key] is not None:
-                return {"__sample_id": str(example[key])}
-
-        problem = str(example.get("problem", ""))
-        answer = str(example.get("answer", ""))
-        sample_id = hashlib.sha1(f"{problem}\n<SEP>\n{answer}".encode("utf-8")).hexdigest()
-        return {"__sample_id": sample_id}
-
     logger.info(f"Loading datasets from {data_config.train_datasets}")
     # train_dataset, _ = load_datasets(data_config, cfg.seed)
     train_dataset, _ = load_whole_datasets(data_config, cfg.seed)
@@ -170,7 +169,29 @@ def main(cfg: RLModelTrainingConfig):
     )
 
     # Resume
+    excluded_sample_ids = load_sample_ids(data_config.exclude_sample_ids_path)
+    if len(excluded_sample_ids) > 0:
+        before_exclude = len(train_dataset)
+        logger.info(f"Excluding {len(excluded_sample_ids)} used sample IDs")
+        train_dataset = train_dataset.filter(
+            lambda x: x["__sample_id"] not in excluded_sample_ids,
+            desc="Excluding used sample IDs",
+        )
+        logger.info(
+            f"{len(train_dataset)} examples remaining "
+            f"(removed {before_exclude - len(train_dataset)})"
+        )
+    
     resume = getattr(cfg, 'resume', False)
+    if resume:
+        gamma_state_path = os.path.join(cfg.logging.save_dir, "accuracy_gamma_state.json")
+        if not os.path.exists(gamma_state_path):
+            raise ValueError(f"Resume requested but gamma_state not found at {gamma_state_path}")
+        with open(gamma_state_path) as f:
+            gamma_state = json.load(f)
+        logger.info(f"[Resume] gamma_state={gamma_state}")
+
+    """
     if resume:
         gamma_state_path = os.path.join(cfg.logging.save_dir, "accuracy_gamma_state.json")
         if not os.path.exists(gamma_state_path):
@@ -198,16 +219,19 @@ def main(cfg: RLModelTrainingConfig):
             logger.info(
                 f"{len(train_dataset)} training examples remaining after exclusion (removed {before_exclude - len(train_dataset)})"
             )
+    """
 
     max_train_examples = data_config.max_train_examples
-    skip_first_samples = max(0, cfg.skip_first_samples) + auto_skip
+    # skip_first_samples = max(0, cfg.skip_first_samples) + auto_skip
+    skip_first_samples = max(0, cfg.skip_first_samples)
 
     if max_train_examples is None or max_train_examples == -1:
         start_index = min(skip_first_samples, len(train_dataset))
         end_index = len(train_dataset)
     else:
         start_index = min(skip_first_samples, len(train_dataset))
-        end_index = min(len(train_dataset), skip_first_samples + max_train_examples - auto_skip)
+        # end_index = min(len(train_dataset), skip_first_samples + max_train_examples - auto_skip)
+        end_index = min(len(train_dataset), skip_first_samples + max_train_examples)
 
     if start_index >= end_index:
         raise ValueError(
@@ -221,8 +245,9 @@ def main(cfg: RLModelTrainingConfig):
         f"Selected training examples in range [{start_index}, {end_index}) -> {len(train_dataset)} examples"
     )
 
+    """
     selected_sample_ids = train_dataset["__sample_id"]
-    if not resume:  # resume 시에는 이미 저장된 ID 그대로 유지
+    if not resume:
         save_sample_ids(data_config.save_selected_sample_ids_path, selected_sample_ids)
         if data_config.save_selected_sample_ids_path is not None and data_config.save_selected_sample_ids_path != "":
             logger.info(
@@ -230,13 +255,15 @@ def main(cfg: RLModelTrainingConfig):
             )
 
     train_dataset = train_dataset.remove_columns("__sample_id")
+    """
 
     def apply_template(example):
-        problem = example["problem"]
-        answer = example["answer"]
-        solve_rates = example["llama8b_solve_rate"]
-
-        return {"prompt": problem, "answer": answer, "solve_rates": solve_rates}
+        return {
+            "prompt": example["problem"],
+            "answer": example["answer"],
+            "solve_rates": example["llama8b_solve_rate"],
+            "__sample_id": example["__sample_id"],
+        }
 
     train_dataset: Dataset = train_dataset.map(
         apply_template, num_proc=4, desc="Applying template"

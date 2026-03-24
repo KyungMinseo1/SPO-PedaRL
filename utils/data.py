@@ -1,5 +1,5 @@
 from datasets import load_dataset, Dataset, concatenate_datasets
-from config.train_sft_model import DatasetConfig
+from config.train_rl_model import DatasetConfig
 
 
 def load_datasets(cfg: DatasetConfig, seed: int) -> Dataset:

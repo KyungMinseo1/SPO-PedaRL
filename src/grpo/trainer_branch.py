@@ -386,7 +386,7 @@ class ClassroomBranchTrainer(Trainer):
 
     def _set_signature_columns_if_needed(self):
         if self._signature_columns is None:
-            self._signature_columns = ["prompt", "answer", "solve_rates"]
+            self._signature_columns = ["prompt", "answer", "solve_rates", "__sample_id"]
 
     def get_train_dataloader(self):
         if self.train_dataset is None:
@@ -738,6 +738,7 @@ class ClassroomBranchTrainer(Trainer):
         inputs = sorted(inputs, key=lambda x: str(x))
         answers = [x["answer"] for x in inputs]
         solve_rates = [x["solve_rates"] for x in inputs]
+        sample_ids = [x["__sample_id"] for x in inputs]
         prompts_text = [
             maybe_apply_chat_template(example, self.processing_class)["prompt"]
             for example in inputs
@@ -811,6 +812,7 @@ class ClassroomBranchTrainer(Trainer):
             unique_prompts = all_prompts[:: self.num_generations]
             unique_answers = answers[:: self.num_generations]
             unique_solve_rates = solve_rates[:: self.num_generations]
+            unique_sample_ids = sample_ids[:: self.num_generations]
 
             num_per_node = len(unique_prompts) // self.num_nodes
             start = self.node_id * num_per_node
@@ -818,6 +820,7 @@ class ClassroomBranchTrainer(Trainer):
             node_prompts = unique_prompts[start:end]
             node_answers = unique_answers[start:end]
             node_solve_rates = unique_solve_rates[start:end]
+            node_sample_ids = unique_sample_ids[start:end]
             expanded_problem_idxs = [
                 start + i
                 for i in range(len(node_prompts))
@@ -832,6 +835,7 @@ class ClassroomBranchTrainer(Trainer):
                 expanded_answers.extend([str(a)] * self.num_generations)
                 expanded_solve_rates.extend([s] * self.num_generations)
 
+
             logger.info(
                 f"Generating completions for {len(unique_prompts)} unique problems, with {self.num_generations} generations each and answers {unique_answers}"
             )
@@ -842,6 +846,7 @@ class ClassroomBranchTrainer(Trainer):
                     problem_idxs=expanded_problem_idxs,
                     answers=expanded_answers,
                     solve_rates=expanded_solve_rates,
+                    sample_ids=node_sample_ids,
                     meta=meta_info_shared,
                     server_port=self.server_port,
                     tokenizer=self.processing_class,

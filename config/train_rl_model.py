@@ -78,7 +78,7 @@ class GenerationConfig:
             "simple_student": "prompt_templates/personas/simple_student.txt",
         }
     )
-
+    '''
     judges_rules_turn_prompts_paths: Dict[str, str] = field(
         default_factory=lambda: {
             "answer": "prompt_templates/judges/checklist/answer.txt",
@@ -86,6 +86,13 @@ class GenerationConfig:
             "scaffolding": "prompt_templates/judges/checklist/scaffolding.txt",
             # "relevance": "prompt_templates/judges/checklist/relevance.txt",
             # "application": "prompt_templates/judges/checklist/application.txt",
+        }
+    )
+    '''
+    judges_rules_turn_prompts_paths: Dict[str, str] = field(
+        default_factory=lambda: {
+            "peda_integrated": "prompt_templates/judges/checklist/peda_integrated.txt",
+            "style_integrated": "prompt_templates/judges/checklist/style_integrated.txt",
         }
     )
 

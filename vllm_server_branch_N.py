@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 from hydra.core.config_store import ConfigStore
-from src.classroom_branch import Classroom, Conversation
+from src.classroom_branch_N import Classroom, Conversation
 from config.train_rl_model import RLModelTrainingConfig
 from src.utils.utils import init_logger
 
@@ -176,6 +176,7 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                         "is_main_turn": turn_pair.is_main_turn,
                         "student_message": turn_pair.student_message,
                         "teacher_message": turn_pair.teacher_message,
+                        "next_student_message": turn_pair.next_student_message,
                         "turn_judge_results": {
                             key: [{"reasoning": d.reasoning, "decision": d.decision.name} for d in decisions]
                             for key, decisions in turn_pair.judge_results.items()
@@ -235,6 +236,7 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                         "is_main_turn": turn_pair["is_main_turn"],
                         "student_message": turn_pair["student_message"],
                         "teacher_message": turn_pair["teacher_message"],
+                        "next_student_message": turn_pair["next_student_message"],
                         "turn_judge_results": turn_pair["turn_judge_results"],
                         "pedagogical_reward": turn_pair["pedagogical_reward"],
                         "think_reward": turn_pair["think_reward"],

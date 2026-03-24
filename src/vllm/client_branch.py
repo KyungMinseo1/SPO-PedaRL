@@ -10,6 +10,7 @@ def sample_conversations_branch(
     problem_idxs: List[int],
     answers: List[str],
     solve_rates: List[float],
+    sample_ids: List[str],
     meta: dict = {},
     server_port: int = 8000,
     tokenizer: Optional[PreTrainedTokenizer] = None,
@@ -36,6 +37,7 @@ def sample_conversations_branch(
             "meta": meta,
             "problem_idx": problem_idxs,
             "solve_rates": solve_rates,
+            "sample_ids": sample_ids,
         }
     )
     response.raise_for_status()

@@ -124,7 +124,18 @@ def _worker_loop_fn(gpu_group, task_queue, result_queue, config):
                         print("Warning: load_weights not supported in V1 engine yet")
                 except Exception as e:
                     print(f"Error loading weights: {e}")
-            outs = llm.chat(prompts, sampling_params=sampling_params, lora_request=lora_request)
+            # Add "enable_thinking" to chat_template_kwargs for qwen 3 models.
+            # outs = llm.chat(
+            #     prompts,
+            #     sampling_params=sampling_params,
+            #     lora_request=lora_request,
+            # )
+            outs = llm.chat(
+                prompts,
+                sampling_params=sampling_params,
+                lora_request=lora_request,
+                chat_template_kwargs={"enable_thinking": config["enable_thinking"]}
+            )
             counter += 1
 
         gc.collect()
@@ -176,6 +187,7 @@ class ParallelvLLMInference:
         use_v0: bool = False,
         logging_enabled: bool = False,
         log_file_path: Optional[str] = None,
+        enable_thinking: bool = False,
     ):
         self.model_path = model_path
         self.base_model_path = model_path
@@ -199,6 +211,7 @@ class ParallelvLLMInference:
         self.log_file = (
             os.path.join(log_file_path, "input_prompts.txt") if log_file_path else ""
         )
+        self.enable_thinking = enable_thinking
 
         if self.load_and_unload and not self.enable_sleep_mode:
             raise ValueError("Cannot use load_and_unload without enabling sleep mode")
@@ -274,7 +287,6 @@ class ParallelvLLMInference:
         self.result_queues = [self.ctx.Queue() for _ in range(self.n_instances)]
         self.processes = []
 
-        # ← self 대신 primitive dict만 넘김
         worker_config = {
             "base_model_path": self.base_model_path,
             "adapter_path": self.adapter_path,
@@ -291,6 +303,7 @@ class ParallelvLLMInference:
             "use_awq": self.use_awq,
             "enable_sleep_mode": self.enable_sleep_mode,
             "use_v0": self.use_v0,
+            "enable_thinking": self.enable_thinking,
         }
 
         for idx, gpu_group in enumerate(self.gpu_groups):

@@ -1,0 +1,73 @@
+extraction:
+  number_of_problems_per_batch: 8
+  num_rollouts_per_problem: 4
+  output_filename: conversations.jsonl
+  max_conversations: -1  # -1 = no limit
+
+teacher_model:
+  model_name_or_path: Qwen/Qwen3-4B-Instruct-2507
+  lora:
+    enable: false
+  vllm:
+    temperature: 1.0
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.45
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_v0: false
+    enforce_eager: false
+
+student_model:
+  model_name_or_path: neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.45
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_v0: false
+    enforce_eager: false
+
+# judge_model is NOT used during extraction.
+# use_openrouter: true means no GPU is allocated — it's just an API client stub.
+judge_model:
+  model_name_or_path: placeholder
+  use_openrouter: true
+
+# reward_model is NOT used during extraction.
+# "None" tells Classroom to skip its initialization entirely.
+reward_model:
+  model_name_or_path: None
+
+logging:
+  wandb: true
+  wandb_project: extract-conversations
+  wandb_run_name: 4B_Branch_extraction_No_think
+  run_group: 4b
+  wandb_tags: ["4b", "extraction"]
+  save_dir: extracted_conversations/4b_Branch_No_think
+
+generation:
+  tokenizer_to_use: Qwen/Qwen3-4B-Instruct-2507
+
+  max_turns: 15
+  branch_size: 4
+
+  use_thinking: false
+  force_thinking: false
+
+  # Keep number_judge_attempts > 0 so that after each completed conversation the
+  # state stays at JUDGE_TURN (not GENERATE_SOLUTION).  With active_rewards=[]
+  # the judge is never actually invoked — this just prevents unnecessary
+  # student solution generation.
+  number_judge_attempts: 2
+
+  teacher_prompt_path: prompt_templates/new_teacher_prompt_2.txt
+
+dataset:
+  max_train_examples: 8
+  lower_bound_solve_rate: 0.0

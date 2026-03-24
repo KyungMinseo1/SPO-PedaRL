@@ -89,7 +89,7 @@ def read_template(path: str) -> Template:
 def get_tokenizer(tokenizer_to_use: str) -> AutoTokenizer:
     return AutoTokenizer.from_pretrained(tokenizer_to_use)
 
-from src.turn_pair import TurnPair
+from src.turn_pair_N import TurnPair
 
 class Conversation:
     def __init__(
@@ -118,7 +118,9 @@ class Conversation:
         self.student_turns = 0
 
         # NOTE: Branching related attributes
-        self.auxilary_teacher_message = defaultdict(list)  # To store teacher messages that are generated after the main teacher message in the same turn.
+        self.auxiliary_teacher_message = defaultdict(list)  # To store teacher messages that are generated after the main teacher message in the same turn.
+        self.auxiliary_message_stage = defaultdict(list) # To store at which stage the auxiliary message is (Finished or Not Finished)
+        self.auxiliary_next_student_message = defaultdict(list) # To store student messages that are generated after the teacher message in the same turn.
         self.turn_pairs = defaultdict(list)
 
         problem_hash = hash(problem)
@@ -392,8 +394,13 @@ class Conversation:
             "role": turn.teacher_message["role"],
             "content": self._hide_thinking(turn.teacher_message["content"]),
         }
+        next_student_message = {
+            "role": turn.next_student_message["role"],
+            "content": self._hide_thinking(turn.next_student_message["content"]),
+        }
         messages.append(student_message)
         messages.append(teacher_message)
+        messages.append(next_student_message)
         return messages
 
     def _get_conversation_from_teacher_perspective(self):
@@ -407,7 +414,7 @@ class Conversation:
                 conversation.append({"role": "user", "content": message["content"]})
         return conversation
 
-    def _get_conversation_from_student_perspective(self):
+    def _get_conversation_from_student_perspective(self, prior_teacher_message: Optional[dict] = None):
         conversation = []
         for message in self.conversation:
             if message["role"] == "student":
@@ -421,6 +428,16 @@ class Conversation:
                 conversation.append(
                     {"role": "user", "content": self._hide_thinking(message["content"])}
                 )
+        if prior_teacher_message is not None:
+            # Remove the last teacher message, replace it with the prior teacher message with hidden thinking for the student to respond to.
+            if len(conversation) > 0 and conversation[-1]["role"] == "user":
+                conversation = conversation[:-1]
+                conversation.append(
+                    {"role": "user", "content": self._hide_thinking(prior_teacher_message["content"])}
+                )
+            else:
+                raise ValueError("The last message in the conversation is not a teacher message, cannot replace with prior teacher message.")
+
         return conversation
 
     def get_conversation(self, rule_name: Optional[str] = None):
@@ -436,10 +453,21 @@ class Conversation:
                 return [
                     {"role": "system", "content": self.system_prompt_student_attempt}
                 ]
-            conversation = [
-                {"role": "system", "content": self.system_prompt_student}
-            ] + self._get_conversation_from_student_perspective()
-            return conversation
+            conversation = []
+            conversation.append(
+                [{"role": "system", "content": self.system_prompt_student}]
+                + self._get_conversation_from_student_perspective()
+            )
+
+            for prior_teacher_message, stage in zip(self.auxiliary_teacher_message[self.teacher_turns - 1], self.auxiliary_message_stage[self.teacher_turns - 1]):
+                if stage == ConversationState.STUDENT_TURN:
+                    conversation.append(
+                        [{"role": "system", "content": self.system_prompt_student}]
+                        + self._get_conversation_from_student_perspective(prior_teacher_message)
+                    )
+                else:
+                    conversation.append("Finished") # We can also add the prior teacher message with hidden thinking here for the student to respond to, but in practice we found that it is better to just give a "Finished" signal to indicate that the auxiliary teacher message is finished and the student should respond to the main teacher message without being distracted by the auxiliary teacher message.
+            return conversation # For student turn, we return a doubled list of conversations, including the main conversation and the auxiliary conversations after each teacher message in the same turn.
 
         elif self.state == ConversationState.JUDGE_TURN:
             if rule_name is None:
@@ -486,9 +514,16 @@ class Conversation:
 
     def add_message(self, content: str, is_processed: bool = False):
         if is_processed:
-            self.auxilary_teacher_message[self.teacher_turns - 1].append(
+            self.auxiliary_teacher_message[self.teacher_turns - 1].append(
                 {"role": "teacher", "content": content}
             )
+            if (
+                # len(self.conversation) >= self.generation_cfg.max_turns or
+                "<end_of_conversation>" in content
+            ):
+                self.auxiliary_message_stage[self.teacher_turns - 1].append(ConversationState.JUDGE_TURN)
+            else:
+                self.auxiliary_message_stage[self.teacher_turns - 1].append(ConversationState.STUDENT_TURN)
             return
 
         if self.state == ConversationState.TEACHER_TURN:
@@ -1002,18 +1037,38 @@ class Classroom:
     def generate_next_student_utterances(
         self, conversations: List[Conversation]
     ) -> List[str]:
-        """
-        Given a list of Conversation objects in STUDENT_TURN, generate the next student utterance
-        for each and add it to the conversation.
-        """
-        # prompts = [conv.get_conversation() for conv in conversations]
         prompts = [conv.get_conversation() for conv in conversations]
-        responses = self.student_model.run_batch(prompts, self.sampling_params_student)
+        conv_ids = [conv.conversation_id for conv in conversations]
+        conv_map = {conv.conversation_id: conv for conv in conversations}
+
+        prompts_flat = []
+        prompts_mapping: List[Tuple[str, int]] = []
+
+        for conv_id, conv_prompts in zip(conv_ids, prompts):
+            for prompt_idx, prompt in enumerate(conv_prompts):
+                if prompt == "Finished":
+                    continue
+                prompts_flat.append(prompt)
+                prompts_mapping.append((conv_id, prompt_idx))
+
+        responses = self.student_model.run_batch(prompts_flat, self.sampling_params_student)
         student_utterances = [response.outputs[0].text for response in responses]
-        for conv, utterance in zip(conversations, student_utterances):
-            conv.add_message(utterance)
-            conv.student_turns += 1
-        return student_utterances
+
+        for conv_id, num_prompts in zip(conv_ids, [len(conv_prompts) for conv_prompts in prompts]):
+            conv = conv_map[conv_id]
+            conv.auxiliary_next_student_message[conv.teacher_turns - 1] = [None] * (num_prompts - 1)
+
+        main_utterances = []
+        for (conv_id, prompt_idx), utterance in zip(prompts_mapping, student_utterances):
+            conv = conv_map[conv_id]
+            if prompt_idx == 0:
+                conv.add_message(utterance)
+                conv.student_turns += 1
+                main_utterances.append(utterance)
+            else:
+                conv.auxiliary_next_student_message[conv.teacher_turns - 1][prompt_idx - 1] = utterance
+
+        return main_utterances
 
     def sample_conversations(
         self,
@@ -1335,18 +1390,23 @@ class Classroom:
                                 conversation_id=conv.conversation_id,
                                 teacher_turn=teacher_turn,
                                 is_main_turn=True,
+                                student_message=conv.conversation[idx - 1],
                                 teacher_message=real_conv,
-                                student_message=conv.conversation[idx - 1])
+                                next_student_message=conv.conversation[idx + 1] if idx + 1 < len(conv.conversation) else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"}
+                            )
                         )  # Create a new turn pair for each teacher message
-                        auxilary_teacher_message = conv.auxilary_teacher_message[teacher_turn]
-                        for aux_message in auxilary_teacher_message:
+                        auxiliary_teacher_message = conv.auxiliary_teacher_message[teacher_turn]
+                        auxiliary_next_student_message = conv.auxiliary_next_student_message[teacher_turn]
+                        for aux_message, aux_next_message in zip(auxiliary_teacher_message, auxiliary_next_student_message):
                             conv.turn_pairs[teacher_turn].append(
                                 TurnPair(
                                     conversation_id=conv.conversation_id,
                                     teacher_turn=teacher_turn,
                                     is_main_turn=False,
+                                    student_message=conv.conversation[idx - 1],
                                     teacher_message=aux_message,
-                                    student_message=conv.conversation[idx - 1])
+                                    next_student_message=aux_next_message if aux_next_message is not None else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"}
+                                )
                             )
                     teacher_turn += 1
 
