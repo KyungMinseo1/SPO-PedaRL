@@ -451,7 +451,7 @@ class Conversation:
             # If this is the first message in a guided conversation we request the student to start the conversation
             if self.type == ConversationType.ATTEMPTED and len(self.conversation) == 0:
                 return [
-                    {"role": "system", "content": self.system_prompt_student_attempt}
+                    [{"role": "system", "content": self.system_prompt_student_attempt}]
                 ]
             conversation = []
             conversation.append(
@@ -512,7 +512,7 @@ class Conversation:
             conversation.append({"role": "user", "content": self.student_final_prompt})
             return conversation
 
-    def add_message(self, content: str, is_processed: bool = False):
+    def add_message(self, content: str, is_processed: bool = False, auxiliary_message_idx: Optional[int] = None):
         if is_processed:
             self.auxiliary_teacher_message[self.teacher_turns - 1].append(
                 {"role": "teacher", "content": content}
@@ -524,6 +524,10 @@ class Conversation:
                 self.auxiliary_message_stage[self.teacher_turns - 1].append(ConversationState.JUDGE_TURN)
             else:
                 self.auxiliary_message_stage[self.teacher_turns - 1].append(ConversationState.STUDENT_TURN)
+            return
+        
+        if auxiliary_message_idx is not None:
+            self.auxiliary_next_student_message[self.teacher_turns - 1][auxiliary_message_idx] = {"role": "student", "content": content}
             return
 
         if self.state == ConversationState.TEACHER_TURN:
@@ -1056,7 +1060,8 @@ class Classroom:
 
         for conv_id, num_prompts in zip(conv_ids, [len(conv_prompts) for conv_prompts in prompts]):
             conv = conv_map[conv_id]
-            conv.auxiliary_next_student_message[conv.teacher_turns - 1] = [None] * (num_prompts - 1)
+            if conv.teacher_turns > 0:
+                conv.auxiliary_next_student_message[conv.teacher_turns - 1] = [None] * (num_prompts - 1)
 
         main_utterances = []
         for (conv_id, prompt_idx), utterance in zip(prompts_mapping, student_utterances):
@@ -1066,7 +1071,8 @@ class Classroom:
                 conv.student_turns += 1
                 main_utterances.append(utterance)
             else:
-                conv.auxiliary_next_student_message[conv.teacher_turns - 1][prompt_idx - 1] = utterance
+                if conv.teacher_turns > 0:
+                    conv.add_message(utterance, auxiliary_message_idx=prompt_idx - 1)
 
         return main_utterances
 
