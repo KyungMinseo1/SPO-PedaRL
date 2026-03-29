@@ -15,10 +15,12 @@ class TurnPair:
 
     lane: str = "main"  # main | auxiliary | refine
     parent_state_id: Optional[str] = None
+    teacher_system_prompt: Optional[str] = None
     refinement_message: Optional[dict] = None
     refined_student_message: Optional[dict] = None
     new_teacher_message: Optional[dict] = None
-    enhanced_prompt: Optional[list] = None
+    # Stores only enhanced current student message (dict), not the full prompt history.
+    enhanced_prompt: Optional[dict] = None
 
     # Judge Results
     judge_results: Dict[str, List[JudgeResponse]] = field(default_factory=dict)  # rule_name -> List[JudgeResponse]

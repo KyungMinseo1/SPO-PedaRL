@@ -462,6 +462,24 @@ class Conversation:
                     break
         return [{"role": "system", "content": self.system_prompt_teacher}] + messages
 
+    def _build_enhanced_student_message(
+        self,
+        student_message: dict,
+        override_student_message: Optional[dict] = None,
+    ) -> dict:
+        """Return a student-message-shaped dict with optional self-reflection hint appended."""
+        enhanced = {
+            "role": student_message.get("role", "student"),
+            "content": student_message.get("content", ""),
+        }
+        if override_student_message is not None:
+            enhanced["content"] = (
+                enhanced["content"]
+                + "\n\n[Self-Reflection Hint]\n"
+                + self._hide_thinking(override_student_message.get("content", ""))
+            )
+        return enhanced
+
     def _get_conversation_from_student_perspective(self, prior_teacher_message: Optional[dict] = None):
         conversation = []
         for message in self.conversation:
@@ -1583,8 +1601,8 @@ class Classroom:
                         ).hexdigest()
                         refinement_message = conv.main_refinement_messages.get(teacher_turn)
                         enhanced_prompt = (
-                            conv._build_teacher_prompt_messages(
-                                idx,
+                            conv._build_enhanced_student_message(
+                                parent_student_message,
                                 override_student_message=refinement_message,
                             )
                             if refinement_message is not None
@@ -1598,6 +1616,7 @@ class Classroom:
                                 is_main_turn=True,
                                 lane="main",
                                 parent_state_id=parent_state_id,
+                                teacher_system_prompt=conv.system_prompt_teacher,
                                 student_message=parent_student_message,
                                 teacher_message=real_conv,
                                 next_student_message=conv.conversation[idx + 1] if idx + 1 < len(conv.conversation) else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"},
@@ -1618,6 +1637,7 @@ class Classroom:
                                     is_main_turn=False,
                                     lane="auxiliary",
                                     parent_state_id=parent_state_id,
+                                    teacher_system_prompt=conv.system_prompt_teacher,
                                     student_message=parent_student_message,
                                     teacher_message=aux_message,
                                     next_student_message=aux_next_message if aux_next_message is not None else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"},

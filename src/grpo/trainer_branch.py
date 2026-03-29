@@ -607,12 +607,53 @@ class ClassroomBranchTrainer(Trainer):
                 if not enhanced_prompt:
                     continue
 
+                prompt_messages = None
+                # Backward compatibility: prebuilt full prompt list.
+                if isinstance(enhanced_prompt, list):
+                    prompt_messages = enhanced_prompt
+                # Current compact format: only enhanced student-message dict.
+                elif isinstance(enhanced_prompt, dict):
+                    prompt_messages = []
+                    system_prompt = tp.get("teacher_system_prompt")
+                    if isinstance(system_prompt, str) and system_prompt:
+                        prompt_messages.append({"role": "system", "content": system_prompt})
+
+                    # Rebuild true state prefix from prior main turns.
+                    for prev_idx in range(turn_idx):
+                        prev_tp = turn_pairs[prev_idx]
+                        prev_student = prev_tp.get("student_message")
+                        prev_teacher = prev_tp.get("teacher_message")
+                        if isinstance(prev_student, dict):
+                            prompt_messages.append(
+                                {
+                                    "role": "user",
+                                    "content": str(prev_student.get("content", "")),
+                                }
+                            )
+                        if isinstance(prev_teacher, dict):
+                            prompt_messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": str(prev_teacher.get("content", "")),
+                                }
+                            )
+
+                    prompt_messages.append(
+                        {
+                            "role": "user",
+                            "content": str(enhanced_prompt.get("content", "")),
+                        }
+                    )
+
+                if not prompt_messages:
+                    continue
+
                 comp_ids = completion_ids[b][start_pos:end_pos].tolist()
                 if not comp_ids:
                     continue
 
                 prompt_ids = self.processing_class.apply_chat_template(
-                    enhanced_prompt,
+                    prompt_messages,
                     tokenize=True,
                     # Keep base/enhanced scoring under the same assistant-start context.
                     add_generation_prompt=True,
