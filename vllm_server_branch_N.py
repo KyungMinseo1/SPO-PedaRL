@@ -115,7 +115,9 @@ def sample_conversations_branch(request: ConversationBranchRequest):
 
     Advantage computation (compute_all_advantages_flat):
     - accuracy, end_of_conversation, [think if not turn]:  GRPO within same problem_idx group
-    - pedagogical_alignment, length, [think if turn]:      GRPO within same (problem_idx, teacher_turn, is_main_turn) group
+        - pedagogical_alignment, length, [think if turn]:      GRPO within Group A or B
+            Group A: (problem_idx, turn_idx)
+            Group B: (problem_idx, turn_idx, parent_state_id)
     """
     global classroom, config
 
@@ -173,10 +175,17 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                 turn_pairs_data.append(
                     {
                         "teacher_turn": turn_pair.teacher_turn,
+                        "turn_idx": turn_pair.turn_idx,
                         "is_main_turn": turn_pair.is_main_turn,
+                        "lane": turn_pair.lane,
+                        "parent_state_id": turn_pair.parent_state_id,
                         "student_message": turn_pair.student_message,
                         "teacher_message": turn_pair.teacher_message,
                         "next_student_message": turn_pair.next_student_message,
+                        "refinement_message": turn_pair.refinement_message,
+                        "refined_student_message": turn_pair.refined_student_message,
+                        "new_teacher_message": turn_pair.new_teacher_message,
+                        "enhanced_prompt": turn_pair.enhanced_prompt,
                         "turn_judge_results": {
                             key: [{"reasoning": d.reasoning, "decision": d.decision.name} for d in decisions]
                             for key, decisions in turn_pair.judge_results.items()
@@ -192,6 +201,7 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                         "pedagogical_stage_alignment_advantage": turn_pair.pedagogical_stage_alignment_advantage,
                         "length_advantage": turn_pair.length_advantage,
                         "think_advantage": turn_pair.think_advantage,
+                        "opd_token_advantage": turn_pair.opd_token_advantage,
                     }
                 )
 
@@ -237,6 +247,10 @@ def sample_conversations_branch(request: ConversationBranchRequest):
                         "student_message": turn_pair["student_message"],
                         "teacher_message": turn_pair["teacher_message"],
                         "next_student_message": turn_pair["next_student_message"],
+                        "refinement_message": turn_pair.get("refinement_message"),
+                        "refined_student_message": turn_pair.get("refined_student_message"),
+                        "new_teacher_message": turn_pair.get("new_teacher_message"),
+                        "enhanced_prompt": turn_pair.get("enhanced_prompt"),
                         "turn_judge_results": turn_pair["turn_judge_results"],
                         "pedagogical_reward": turn_pair["pedagogical_reward"],
                         "think_reward": turn_pair["think_reward"],

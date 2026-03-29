@@ -1,6 +1,5 @@
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from dataclasses import dataclass, field
-from enum import Enum
 from src.classroom_branch_N import JudgeResponse
 
 
@@ -8,10 +7,18 @@ from src.classroom_branch_N import JudgeResponse
 class TurnPair:
     conversation_id: str # To identify which conversation this turn pair belongs to
     teacher_turn: int
+    turn_idx: int
     is_main_turn: bool  # True if this turn pair corresponds to a main teacher message, False if it's an auxiliary teacher message
     student_message: dict  # {'role': 'student', 'content': ...}
     teacher_message: dict  # {'role': 'teacher', 'content': ...}
     next_student_message: dict  # {'role': 'student', 'content': ...} or {'rolde': 'student', 'content': "[NO NEXT STUDENT TURN]"}
+
+    lane: str = "main"  # main | auxiliary | refine
+    parent_state_id: Optional[str] = None
+    refinement_message: Optional[dict] = None
+    refined_student_message: Optional[dict] = None
+    new_teacher_message: Optional[dict] = None
+    enhanced_prompt: Optional[list] = None
 
     # Judge Results
     judge_results: Dict[str, List[JudgeResponse]] = field(default_factory=dict)  # rule_name -> List[JudgeResponse]
@@ -30,3 +37,6 @@ class TurnPair:
     
     # Depends on hyperparameter(Per Node vs Per Turn)
     think_advantage: Optional[float] = None  # This turn's or node's thinking advantage
+
+    # Optional token-level OPD advantage term (typically populated in trainer)
+    opd_token_advantage: Optional[float] = None

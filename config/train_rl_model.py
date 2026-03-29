@@ -109,6 +109,7 @@ class GenerationConfig:
         "prompt_templates/initial_attempt_wrapper_prompt.txt"
     )
     student_attempt_prompt_path: str = "prompt_templates/student_attempt_prompt.txt"
+    self_reflect_prompt_path: str = "prompt_templates/self_reflect_prompt.txt"
 
     max_turns: int = 15  # Will actually be 16 turns.
     max_tokens_in_conversation: int = 8192
@@ -118,6 +119,14 @@ class GenerationConfig:
     tokenizer_to_use: str = "Qwen/Qwen2.5-7B-Instruct"
 
     branch_size: int = 3
+    enable_self_reflect: bool = False
+    # Draw multiple one-step self-reflect candidates and pick one representative.
+    self_reflect_num_candidates: int = 1
+    # Supported: "longest", "checklist_coverage"
+    self_reflect_selection_mode: str = "longest"
+    # Grouping mode for turn-level advantage normalisation.
+    # A: (problem_idx, turn_idx), B: (problem_idx, turn_idx, parent_state_id)
+    adv_grouping_mode: str = "B"
 
     # Number of attempts we will average over the final student generation.
     number_student_attempts: int = 8
@@ -219,6 +228,12 @@ class TrainConfig:
     top_k_adv: Optional[int] = None  # If specified, we will use top-k advantage sampling during training.
 
     normalize_tree_advantages: bool = False  # Whether to normalize the tree advantages before computing the loss.
+    separate_component_normalization: bool = True
+
+    # Self-refinement / OPD settings
+    use_self_reflect_for_training: bool = False
+    opd_enabled: bool = False
+    opd_weight: float = 0.0
 
     accuracy_reward_gamma: float = 0.999 # Decay factor for accuracy reward.
 

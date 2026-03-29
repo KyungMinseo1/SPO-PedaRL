@@ -1,0 +1,108 @@
+train:
+  number_of_problems_per_batch: 8
+  per_device_train_batch_size: 2
+  num_samples_per_problem: 8
+
+  learning_rate: 1e-6
+  beta: 0.01
+  mu: 2
+
+  reward_list: ["accuracy", "pedagogical_alignment", "think", "length", "end_of_conversation"]
+  reward_weights: [0.5, 0.3, 0.1, 0.05, 0.05]
+
+  normalize_tree_advantages: true
+  separate_component_normalization: true
+
+  opd_enabled: true
+  opd_weight: 0.1
+
+  accuracy_reward_gamma: 0.99
+
+teacher_model:
+  model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  lora:
+    enable: true
+    rank: 64
+    alpha: 64
+  vllm:
+    temperature: 1.0
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_v0: false
+    enforce_eager: false
+
+student_model:
+  model_name_or_path: neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    use_v0: false
+
+    load_and_unload: true
+    enforce_eager: false
+
+judge_model:
+  model_name_or_path: Qwen/Qwen2.5-14B-Instruct-AWQ
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_awq: true
+    use_v0: false
+    enforce_eager: false
+
+reward_model:
+  model_name_or_path: Answer
+
+huggingface:
+  name: <huggingface_name>
+  push_to_hub: false
+
+logging:
+  wandb: true
+  wandb_project: train-rl-Branch_LAB
+  wandb_run_name: 7B(LoRA_64)_Branch_OPD_B_2000
+  run_group: 7b
+  wandb_tags: ["7b", "opd", "groupB"]
+  save_dir: checkpoints/7b_Branch_OPD_B_2000
+  save_steps: 10
+
+generation:
+  max_turns: 15
+  branch_size: 4
+
+  enable_self_reflect: true
+  self_reflect_num_candidates: 4
+  self_reflect_selection_mode: checklist_coverage
+  adv_grouping_mode: B
+
+  use_thinking: true
+  force_thinking: true
+  convert_think_to_turn_reward: true
+
+  use_soft_pedagogical_reward: true
+  ignore_rejected_judge: true
+
+  use_experimental_shared_memory: false
+
+  number_judge_attempts: 2
+
+  n_turns_to_sample: 3
+
+dataset:
+  max_train_examples: 2000
+  lower_bound_solve_rate: 0.05
+  exclude_sample_ids_path: checkpoints/7b_Branch_OPD_B_2000/used_sample_ids.txt
+  save_selected_sample_ids_path: checkpoints/7b_Branch_OPD_B_2000/used_sample_ids.txt

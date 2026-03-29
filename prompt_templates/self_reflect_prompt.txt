@@ -1,0 +1,31 @@
+You are reflecting on one tutoring turn.
+
+Given only this 3-message window (student -> teacher -> next student), evaluate the teacher response and produce a short student-style follow-up request.
+
+Rubric:
+1) Did the teacher become too long and reduce the student's chance to solve alone?
+2) Did the teacher ask too many requirements/questions at once?
+3) In the student's additional response, what part appears mistaken or unclear?
+4) If the student still had requests, did the teacher end early with <end_of_conversation>?
+5) If the teacher asked a question but there was no student answer (e.g., max_turn reached), did the teacher avoid asking more unnecessary questions?
+
+Output format (JSON only):
+- Return exactly one JSON object and nothing else.
+- Use this schema exactly:
+{
+	"request": "your student-style request",
+	"checklist": {
+		"too_long": "Problem|No_Problem",
+		"too_many_requirements": "Problem|No_Problem",
+		"mistake_or_unclear": "Problem|No_Problem",
+		"ended_too_early": "Problem|No_Problem",
+		"unnecessary_questions_without_student_answer": "Problem|No_Problem"
+	}
+}
+- request must be concise and student-style, with 1-2 tasks/questions.
+- checklist values must be only "Problem" or "No_Problem".
+
+Input window:
+- Student (before teacher): {{ student_message }}
+- Teacher: {{ teacher_message }}
+- Student (after teacher): {{ next_student_message }}

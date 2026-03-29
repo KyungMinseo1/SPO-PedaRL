@@ -8,6 +8,7 @@ import gc
 import torch
 import time
 import json
+import hashlib
 import pandas as pd
 from tqdm import tqdm
 from enum import Enum
@@ -121,6 +122,13 @@ class Conversation:
         self.auxiliary_teacher_message = defaultdict(list)  # To store teacher messages that are generated after the main teacher message in the same turn.
         self.auxiliary_message_stage = defaultdict(list) # To store at which stage the auxiliary message is (Finished or Not Finished)
         self.auxiliary_next_student_message = defaultdict(list) # To store student messages that are generated after the teacher message in the same turn.
+
+        # Main-only self-refinement artifacts (1st implementation stage)
+        # key: teacher_turn index
+        self.main_refinement_messages: Dict[int, dict] = {}
+        self.main_refined_student_messages: Dict[int, dict] = {}
+        self.main_new_teacher_messages: Dict[int, dict] = {}
+
         self.turn_pairs = defaultdict(list)
 
         problem_hash = hash(problem)
@@ -218,6 +226,20 @@ class Conversation:
 
     def clear_current_conversation(self):
         self.current_conversation = []
+
+    def add_main_refinement_artifacts(
+        self,
+        teacher_turn: int,
+        refinement_message: Optional[dict] = None,
+        refined_student_message: Optional[dict] = None,
+        new_teacher_message: Optional[dict] = None,
+    ):
+        if refinement_message is not None:
+            self.main_refinement_messages[teacher_turn] = refinement_message
+        if refined_student_message is not None:
+            self.main_refined_student_messages[teacher_turn] = refined_student_message
+        if new_teacher_message is not None:
+            self.main_new_teacher_messages[teacher_turn] = new_teacher_message
 
     @classmethod
     def from_dataframe(
@@ -413,6 +435,32 @@ class Conversation:
             else:
                 conversation.append({"role": "user", "content": message["content"]})
         return conversation
+
+    def _build_teacher_prompt_messages(
+        self,
+        up_to_idx: int,
+        override_student_message: Optional[dict] = None,
+    ) -> List[dict]:
+        messages = []
+        for message in self.conversation[:up_to_idx]:
+            if message["role"] == "teacher":
+                messages.append(
+                    {"role": "assistant", "content": message["content"]}
+                )
+            else:
+                messages.append({"role": "user", "content": message["content"]})
+        if override_student_message is not None:
+            # Keep turn structure unchanged and augment only the latest user content.
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i]["role"] == "user":
+                    messages[i] = {
+                        "role": "user",
+                        "content": messages[i]["content"]
+                        + "\n\n[Self-Reflection Hint]\n"
+                        + self._hide_thinking(override_student_message["content"]),
+                    }
+                    break
+        return [{"role": "system", "content": self.system_prompt_teacher}] + messages
 
     def _get_conversation_from_student_perspective(self, prior_teacher_message: Optional[dict] = None):
         conversation = []
@@ -1076,6 +1124,143 @@ class Classroom:
 
         return main_utterances
 
+    def _parse_reflect_json(self, text: str) -> Tuple[str, Dict[str, str]]:
+        """Parse self-reflect JSON output and return (request, checklist)."""
+        raw = (text or "").strip()
+        if not raw:
+            return "", {}
+
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end > start:
+                try:
+                    parsed = json.loads(raw[start : end + 1])
+                except Exception:
+                    parsed = None
+
+        if not isinstance(parsed, dict):
+            return raw, {}
+
+        request = parsed.get("request", "")
+        request = request.strip() if isinstance(request, str) else ""
+
+        checklist_raw = parsed.get("checklist", {})
+        checklist: Dict[str, str] = {}
+        if isinstance(checklist_raw, dict):
+            for key, value in checklist_raw.items():
+                if isinstance(value, str):
+                    checklist[str(key)] = value.strip()
+        elif isinstance(checklist_raw, list):
+            for idx, value in enumerate(checklist_raw):
+                if isinstance(value, str):
+                    checklist[str(idx)] = value.strip()
+
+        if not request:
+            request = raw
+        return request, checklist
+
+    def _count_reflect_checklist_coverage(self, checklist: Dict[str, str]) -> int:
+        """Count how many checklist entries are marked as Problem."""
+        return sum(1 for value in checklist.values() if value.strip().lower() == "problem")
+
+    def _pick_reflect_representative(self, candidates: List[str], mode: str) -> str:
+        if not candidates:
+            return ""
+
+        cleaned = [candidate.strip() for candidate in candidates if candidate and candidate.strip()]
+        if not cleaned:
+            return ""
+
+        parsed = []
+        for candidate in cleaned:
+            request_text, checklist = self._parse_reflect_json(candidate)
+            parsed.append(
+                {
+                    "request": request_text if request_text else candidate,
+                    "problem_count": self._count_reflect_checklist_coverage(checklist),
+                }
+            )
+
+        if mode == "checklist_coverage":
+            ranked = sorted(
+                parsed,
+                key=lambda row: (row["problem_count"], len(row["request"])),
+                reverse=True,
+            )
+            return ranked[0]["request"]
+
+        # Default and fallback: longest candidate.
+        return max(parsed, key=lambda row: len(row["request"]))["request"]
+
+    def generate_main_refinement_messages(self, conversations: List[Conversation]) -> None:
+        """Generate one-step self-reflect candidates and store one representative per main turn."""
+        if not getattr(self.generation_cfg, "enable_self_reflect", False):
+            return
+
+        num_candidates = max(1, int(getattr(self.generation_cfg, "self_reflect_num_candidates", 1)))
+        selection_mode = getattr(self.generation_cfg, "self_reflect_selection_mode", "longest")
+
+        reflect_template = read_template(self.generation_cfg.self_reflect_prompt_path)
+        prompts: List[List[dict]] = []
+        refs: List[Tuple[Conversation, int, int]] = []
+
+        for conv in conversations:
+            if len(conv.conversation) < 3:
+                continue
+            if conv.conversation[-1]["role"] != "student":
+                continue
+
+            teacher_turn = conv.teacher_turns - 1
+            if teacher_turn < 0:
+                continue
+
+            # Use only the latest student-teacher-student triplet for one-step reflection.
+            triplet = conv.conversation[-3:]
+            if not (
+                triplet[0]["role"] == "student"
+                and triplet[1]["role"] == "teacher"
+                and triplet[2]["role"] == "student"
+            ):
+                continue
+
+            prompt_text = reflect_template.render(
+                student_message=conv._hide_thinking(triplet[0]["content"]),
+                teacher_message=conv._hide_thinking(triplet[1]["content"]),
+                next_student_message=conv._hide_thinking(triplet[2]["content"]),
+            )
+            for candidate_idx in range(num_candidates):
+                prompts.append([
+                    {"role": "user", "content": prompt_text},
+                ])
+                refs.append((conv, teacher_turn, candidate_idx))
+
+        if not prompts:
+            return
+
+        responses = self.teacher_model.run_batch(prompts, self.sampling_params_teacher)
+
+        grouped_candidates: Dict[Tuple[str, int], List[str]] = defaultdict(list)
+        grouped_refs: Dict[Tuple[str, int], Conversation] = {}
+
+        for (conv, teacher_turn, _), response in zip(refs, responses):
+            refinement_text = response.outputs[0].text if response.outputs else ""
+            key = (conv.conversation_id, teacher_turn)
+            grouped_candidates[key].append(refinement_text)
+            grouped_refs[key] = conv
+
+        for key, candidates in grouped_candidates.items():
+            conv = grouped_refs[key]
+            teacher_turn = key[1]
+            representative = self._pick_reflect_representative(candidates, selection_mode)
+            conv.add_main_refinement_artifacts(
+                teacher_turn=teacher_turn,
+                refinement_message={"role": "student", "content": representative},
+            )
+
     def sample_conversations(
         self,
         problems: List[str],
@@ -1204,6 +1389,7 @@ class Classroom:
                     )
                 else:
                     self.generate_next_student_utterances(conversations_to_process)
+                    self.generate_main_refinement_messages(conversations_to_process)
 
                 # Next round counter.
                 round_counter += 1
@@ -1391,14 +1577,34 @@ class Classroom:
             for idx, real_conv in enumerate(conv.conversation):
                 if real_conv["role"] == "teacher":
                     if (idx > 0 or conv.conversation[idx - 1]["role"] == "student"):
+                        parent_student_message = conv.conversation[idx - 1]
+                        parent_state_id = hashlib.sha1(
+                            parent_student_message["content"].encode("utf-8")
+                        ).hexdigest()
+                        refinement_message = conv.main_refinement_messages.get(teacher_turn)
+                        enhanced_prompt = (
+                            conv._build_teacher_prompt_messages(
+                                idx,
+                                override_student_message=refinement_message,
+                            )
+                            if refinement_message is not None
+                            else None
+                        )
                         conv.turn_pairs[teacher_turn].append(
                             TurnPair(
                                 conversation_id=conv.conversation_id,
                                 teacher_turn=teacher_turn,
+                                turn_idx=teacher_turn,
                                 is_main_turn=True,
-                                student_message=conv.conversation[idx - 1],
+                                lane="main",
+                                parent_state_id=parent_state_id,
+                                student_message=parent_student_message,
                                 teacher_message=real_conv,
-                                next_student_message=conv.conversation[idx + 1] if idx + 1 < len(conv.conversation) else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"}
+                                next_student_message=conv.conversation[idx + 1] if idx + 1 < len(conv.conversation) else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"},
+                                refinement_message=conv.main_refinement_messages.get(teacher_turn),
+                                refined_student_message=conv.main_refined_student_messages.get(teacher_turn),
+                                new_teacher_message=conv.main_new_teacher_messages.get(teacher_turn),
+                                enhanced_prompt=enhanced_prompt,
                             )
                         )  # Create a new turn pair for each teacher message
                         auxiliary_teacher_message = conv.auxiliary_teacher_message[teacher_turn]
@@ -1408,10 +1614,17 @@ class Classroom:
                                 TurnPair(
                                     conversation_id=conv.conversation_id,
                                     teacher_turn=teacher_turn,
+                                    turn_idx=teacher_turn,
                                     is_main_turn=False,
-                                    student_message=conv.conversation[idx - 1],
+                                    lane="auxiliary",
+                                    parent_state_id=parent_state_id,
+                                    student_message=parent_student_message,
                                     teacher_message=aux_message,
-                                    next_student_message=aux_next_message if aux_next_message is not None else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"}
+                                    next_student_message=aux_next_message if aux_next_message is not None else {'role': 'student', 'content': "[NO NEXT STUDENT TURN]"},
+                                    refinement_message=None,
+                                    refined_student_message=None,
+                                    new_teacher_message=None,
+                                    enhanced_prompt=None,
                                 )
                             )
                     teacher_turn += 1
@@ -1698,14 +1911,18 @@ class Classroom:
         if is_think_turn_reward and "think" in reward_list:
             turn_reward_names.append("think")
 
-        # key: (problem_idx, teacher_turn, is_main_turn)
+        # Grouping mode for turn-level normalisation:
+        # A -> (problem_idx, turn_idx)
+        # B -> (problem_idx, turn_idx, parent_state_id)
+        grouping_mode = getattr(self.generation_cfg, "adv_grouping_mode", "B")
         turn_groups: Dict[tuple, List] = defaultdict(list)
         for conv in conversations:
             for turn_pairs in conv.turn_pairs.values():
                 for turn_pair in turn_pairs:
-                    # NOTE: turn-level -> Auxiliary turn-level
-                    # key = (conv.problem_idx, turn_pair.teacher_turn)
-                    key = (conv.conversation_id, turn_pair.teacher_turn)
+                    if grouping_mode == "A":
+                        key = (conv.problem_idx, turn_pair.turn_idx)
+                    else:
+                        key = (conv.problem_idx, turn_pair.turn_idx, turn_pair.parent_state_id)
                     turn_groups[key].append(turn_pair)
 
         for reward_name in turn_reward_names:

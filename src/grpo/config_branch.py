@@ -207,6 +207,27 @@ class ClassroomBranchConfig(TrainingArguments):
         },
     )
 
+    separate_component_normalization: bool = field(
+        default=True,
+        metadata={
+            "help": "Whether to normalize each advantage component separately before weighted composition."
+        },
+    )
+
+    opd_enabled: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to enable OPD token-level advantage term."
+        },
+    )
+
+    opd_weight: float = field(
+        default=0.0,
+        metadata={
+            "help": "Weight for OPD token-level advantage term when opd_enabled=True."
+        },
+    )
+
     reward_list: Optional[list] = field(
         default_factory=lambda: ["accuracy", "pedagogical_alignment", "length", "end_of_conversation", "think"],
         metadata={

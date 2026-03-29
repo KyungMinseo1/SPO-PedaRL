@@ -520,6 +520,7 @@ class ClassroomBranchTrainer(Trainer):
             "think":                 "think_advantage",
             "length":                "length_advantage",
             "end_of_conversation":   "end_of_conversation_advantage",
+            "opd":                   "opd_token_advantage",
         }
 
         token_advantages_per_reward = {
@@ -565,6 +566,77 @@ class ClassroomBranchTrainer(Trainer):
                     token_advantages_per_reward[reward][b, start_pos:end_pos] = adv
 
         return token_advantages_per_reward, padding_mask
+
+    def _compute_opd_token_advantages(
+        self,
+        completion_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        turn_pair_advs: List[List[Dict]],
+        base_per_token_logps: torch.Tensor,
+    ) -> None:
+        if not self.args.opd_enabled or self.args.opd_weight == 0.0:
+            return
+
+        batch_size, seq_len = completion_ids.shape
+
+        if "llama" in self.model_name_or_path.lower():
+            sh = self.processing_class.encode("<|start_header_id|>", add_special_tokens=False)[0]
+            eh = self.processing_class.encode("<|end_header_id|>", add_special_tokens=False)[0]
+            at = self.processing_class.encode("assistant", add_special_tokens=False)[0]
+            et = self.processing_class.encode("<|eot_id|>", add_special_tokens=False)[0]
+        else:
+            st = self.processing_class.apply_chat_template([{"role": "system", "content": ""}])[0]
+            at = self.processing_class.encode("assistant")[0]
+            et = self.processing_class.eos_token_id
+
+        for b in range(batch_size):
+            seq = completion_ids[b].tolist()
+            turn_pairs = turn_pair_advs[b]
+
+            if "llama" in self.model_name_or_path.lower():
+                spans = self._find_assistant_turns_llama(seq, sh, eh, at, et)
+            else:
+                spans = self._find_assistant_turns_qwen(seq, st, at, et)
+
+            if len(spans) != len(turn_pairs):
+                continue
+
+            for turn_idx, (start_pos, end_pos) in enumerate(spans):
+                tp = turn_pairs[turn_idx]
+                enhanced_prompt = tp.get("enhanced_prompt")
+                if not enhanced_prompt:
+                    continue
+
+                comp_ids = completion_ids[b][start_pos:end_pos].tolist()
+                if not comp_ids:
+                    continue
+
+                prompt_ids = self.processing_class.apply_chat_template(
+                    enhanced_prompt,
+                    tokenize=True,
+                    # Keep base/enhanced scoring under the same assistant-start context.
+                    add_generation_prompt=True,
+                )
+                input_ids = torch.tensor(prompt_ids + comp_ids, device=completion_ids.device).unsqueeze(0)
+                attn = torch.ones_like(input_ids)
+
+                logits_to_keep = len(comp_ids)
+                with torch.no_grad():
+                    enh_logps = self._get_per_token_logps(
+                        self.model,
+                        input_ids,
+                        attn,
+                        logits_to_keep,
+                        batch_size=1,
+                    )[0]
+
+                base_start = max(start_pos - 1, 0)
+                base_end = base_start + logits_to_keep
+                base_logps = base_per_token_logps[b][base_start:base_end]
+                if base_logps.numel() != enh_logps.numel():
+                    continue
+
+                tp["opd_token_advantage"] = (enh_logps - base_logps).mean().item()
 
     # ──────────────────────────────────────────────────────────────────────
     # Assistant mask
@@ -917,11 +989,25 @@ class ClassroomBranchTrainer(Trainer):
         )
         completion_mask = (completion_ids != self.processing_class.pad_token_id).int()
         attention_mask = completion_mask
+        logits_to_keep = completion_ids.size(1) - 1
+        bs = self.args.per_device_train_batch_size
 
         # Token-level advantages
+        if self.args.opd_enabled and self.args.opd_weight != 0.0:
+            with torch.no_grad():
+                base_per_token_logps = self._get_per_token_logps(
+                    self.model, completion_ids, attention_mask, logits_to_keep, bs
+                )
+            self._compute_opd_token_advantages(
+                completion_ids, attention_mask, turn_pair_advs, base_per_token_logps
+            )
+        reward_list_for_mapping = list(self.args.reward_list)
+        if self.args.opd_enabled and "opd" not in reward_list_for_mapping:
+            reward_list_for_mapping.append("opd")
+
         token_advantages_per_reward, padding_mask = (
             self._map_node_advantages_to_tokens_disentangled(
-                completion_ids, turn_pair_advs, self.args.reward_list
+                completion_ids, turn_pair_advs, reward_list_for_mapping
             )
         )
 
@@ -937,22 +1023,50 @@ class ClassroomBranchTrainer(Trainer):
             token_level_advantages = torch.zeros(completion_ids.shape, dtype=torch.float32, device=device)
             normalized_adv_means = {}
 
-            for reward, weight in zip(self.args.reward_list, self.args.reward_weights):
-                adv = token_advantages_per_reward[reward].clone()
-                active_vals = adv[assistant_mask_bool & ~padding_mask.unsqueeze(1)]
+            composition_rewards = list(self.args.reward_list)
+            composition_weights = list(self.args.reward_weights)
+            if self.args.opd_enabled:
+                composition_rewards.append("opd")
+                composition_weights.append(self.args.opd_weight)
+
+            if self.args.separate_component_normalization:
+                for reward, weight in zip(composition_rewards, composition_weights):
+                    adv = token_advantages_per_reward[reward].clone()
+                    active_vals = adv[assistant_mask_bool & ~padding_mask.unsqueeze(1)]
+                    if active_vals.numel() >= 2:
+                        mean_g = active_vals.mean()
+                        std_g = active_vals.std().clamp(min=1e-4)
+                        adv = torch.where(assistant_mask_bool, (adv - mean_g) / std_g, adv)
+                    normalized_adv_means[reward] = adv[assistant_mask_bool].mean().item() if assistant_mask_bool.any() else 0.0
+                    token_level_advantages += weight * adv
+            else:
+                for reward in composition_rewards:
+                    raw = token_advantages_per_reward[reward]
+                    normalized_adv_means[reward] = raw[assistant_mask_bool].mean().item() if assistant_mask_bool.any() else 0.0
+                for reward, weight in zip(composition_rewards, composition_weights):
+                    token_level_advantages += weight * token_advantages_per_reward[reward]
+
+                active_vals = token_level_advantages[assistant_mask_bool & ~padding_mask.unsqueeze(1)]
                 if active_vals.numel() >= 2:
                     mean_g = active_vals.mean()
                     std_g = active_vals.std().clamp(min=1e-4)
-                    adv = torch.where(assistant_mask_bool, (adv - mean_g) / std_g, adv)
-                normalized_adv_means[reward] = adv[assistant_mask_bool].mean().item() if assistant_mask_bool.any() else 0.0
-                token_level_advantages += weight * adv
+                    token_level_advantages = torch.where(
+                        assistant_mask_bool,
+                        (token_level_advantages - mean_g) / std_g,
+                        token_level_advantages,
+                    )
 
             assistant_mask = assistant_mask_bool.float()
         else:
-            token_level_advantages = sum(
-                token_advantages_per_reward[r] * w
-                for r, w in zip(self.args.reward_list, self.args.reward_weights)
-            )
+            composition_rewards = list(self.args.reward_list)
+            composition_weights = list(self.args.reward_weights)
+            if self.args.opd_enabled:
+                composition_rewards.append("opd")
+                composition_weights.append(self.args.opd_weight)
+
+            token_level_advantages = torch.zeros_like(completion_ids, dtype=torch.float32)
+            for r, w in zip(composition_rewards, composition_weights):
+                token_level_advantages += token_advantages_per_reward[r] * w
             assistant_mask = self._compute_assistant_mask(completion_ids).float()
             assistant_mask[padding_mask] = 0.0
 
@@ -1003,7 +1117,7 @@ class ClassroomBranchTrainer(Trainer):
                 "accuracy_rewards", "eoc_rewards", "pedagogical_stage_rewards", 
                 "think_rewards", "pedagogical_rewards", "length_rewards",
                 "accuracy_advs", "eoc_advs", "pedagogical_stage_advs",
-                "think_advs", "pedagogical_advs", "length_advs",
+                "think_advs", "pedagogical_advs", "length_advs", "opd_advs",
                 # NOTE: combined_advantage is never stored on TurnPair;
                 # combined_A_avg is computed from sequence_advantages below.
             ]
@@ -1023,6 +1137,7 @@ class ClassroomBranchTrainer(Trainer):
                 buckets["pedagogical_advs"].append(turn_pair.get("pedagogical_advantage") or 0.0)
                 buckets["length_advs"].append(turn_pair.get("length_advantage") or 0.0)
                 buckets["think_advs"].append(turn_pair.get("think_advantage") or 0.0)
+                buckets["opd_advs"].append(turn_pair.get("opd_token_advantage") or 0.0)
 
         for nr in trajectory_rewards:
             acc = nr.get("accuracy_reward")
@@ -1049,7 +1164,20 @@ class ClassroomBranchTrainer(Trainer):
             "length":                ("length_rewards",      "length_advs"),
             "think":                 ("think_rewards",       "think_advs"),
         }
-        for reward in self.args.reward_list:
+        metric_rewards = list(self.args.reward_list)
+        if self.args.opd_enabled:
+            metric_rewards.append("opd")
+
+        for reward in metric_rewards:
+            if reward == "opd":
+                if self.args.normalize_tree_advantages:
+                    self._metrics[mode]["opd_A_avg"].append(
+                        normalized_adv_means.get("opd", 0.0)
+                    )
+                else:
+                    self._metrics[mode]["opd_A_avg"].append(_m(buckets["opd_advs"]))
+                continue
+
             rk, ak = reward_name_map[reward]
             self._metrics[mode][f"{reward}_R_avg"].append(_m(buckets[rk]))
             if self.args.normalize_tree_advantages:
