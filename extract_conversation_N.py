@@ -253,9 +253,14 @@ def main(cfg: ConversationExtractionConfig):
                                 "conversation_id": conv.conversation_id,
                                 "teacher_turn": tp.teacher_turn,
                                 "is_main_turn": tp.is_main_turn,
+                                "lane": tp.lane,
+                                "parent_state_id": tp.parent_state_id,
+                                "teacher_system_prompt": tp.teacher_system_prompt,
                                 "student_message": tp.student_message,
                                 "teacher_message": tp.teacher_message,
                                 "next_student_message": tp.next_student_message,
+                                "refinement_message": tp.refinement_message,
+                                "enhanced_prompt": tp.enhanced_prompt,
                             }
                         )
             
@@ -270,9 +275,16 @@ def main(cfg: ConversationExtractionConfig):
                             "conversation_id": conv.conversation_id,
                             "teacher_turn": total_turn_pair["teacher_turn"],
                             "is_main_turn": total_turn_pair["is_main_turn"],
+                            "lane": total_turn_pair["lane"],
+                            "parent_state_id": total_turn_pair["parent_state_id"],
+                            "teacher_system_prompt": total_turn_pair["teacher_system_prompt"],
                             "student_message": total_turn_pair["student_message"],
                             "teacher_message": total_turn_pair["teacher_message"],
                             "next_student_message": total_turn_pair["next_student_message"],
+                            "refinement_message": total_turn_pair["refinement_message"],
+                            "enhanced_prompt": total_turn_pair["enhanced_prompt"],
+                            "has_refinement": total_turn_pair["refinement_message"] is not None,
+                            "has_enhanced_prompt": total_turn_pair["enhanced_prompt"] is not None,
                         }
                     )
 
@@ -292,6 +304,9 @@ def main(cfg: ConversationExtractionConfig):
                     "eoc_rate": _smean(
                         [float(r["ended_with_eoc"]) for r in conversation_rows_for_wandb]
                     ),
+                    "refinement_turn_ratio": _smean(
+                        [float(r["has_refinement"]) for r in turn_rows_for_wandb]
+                    ) if turn_rows_for_wandb else 0.0,
                 }
             )
             wandb.log(
