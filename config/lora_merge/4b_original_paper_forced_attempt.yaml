@@ -1,0 +1,3 @@
+adapter_path: ./checkpoints/4b_Forced_Attempt/checkpoint-250
+output_path: ./models/Peda-RL-4b_Forced_Attempt_03_27
+base_model: Qwen/Qwen3-4B-Instruct-2507

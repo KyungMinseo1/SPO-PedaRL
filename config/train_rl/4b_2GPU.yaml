@@ -1,0 +1,98 @@
+train:
+  number_of_problems_per_batch: 16
+  num_samples_per_problem: 8
+
+  learning_rate: 5e-7
+  beta: 0.001
+  mu: 2
+
+teacher_model:
+  model_name_or_path: Qwen/Qwen3-4B-Instruct-2507
+  lora:
+    enable: true
+    rank: 64
+    alpha: 64
+  vllm:
+    temperature: 1.0
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: true
+    use_v0: false
+    enforce_eager: false
+
+student_model:
+  model_name_or_path: neuralmagic/Meta-Llama-3.1-8B-Instruct-FP8
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.4
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    use_v0: false
+
+    load_and_unload: true
+    enforce_eager: false
+
+judge_model:
+  model_name_or_path: Qwen/Qwen3-30B-A3B-Instruct-2507-FP8
+  vllm:
+    temperature: 0.6
+    max_length: 12000
+    max_num_seqs: 512
+    gpu_memory_utilization: 0.5
+    number_of_gpus_per_instance: 1
+    max_number_of_instances: -1
+    load_and_unload: false
+    use_awq: false
+    use_v0: false
+    enforce_eager: false
+
+reward_model:
+  model_name_or_path: Answer # If we set this to None we get the -r_sol run.
+
+huggingface:
+  name: <huggingface_name>
+  push_to_hub: false
+
+logging:
+  wandb: true
+  wandb_project: train-rl-Branch_2_LAB
+  wandb_run_name: Qwen3-4B-Instruct-2507-SoftLambda0.75(Original_Paper)_Forced_Attempt
+  run_group: 4b
+  wandb_tags: ["4b"]
+  save_dir: checkpoints/4b_Forced_Attempt
+  save_steps: 10
+
+
+generation:
+
+  tokenizer_to_use: Qwen/Qwen3-4B-Instruct-2507
+
+  forced_conversation_type: "attempt"
+
+  # This turns on thinking.
+  # use_thinking: true
+  # force_thinking: true
+
+  # This turns on the hard lambda.
+  extra_penalty_for_rejected_judges: 0.75 # This is the actual lambda we use.
+  turn_reward_lambda_penalty: 0.75
+  pre_reject_weight_w: 1.0
+  accuracy_share_mode: uniform
+  accuracy_share_discount_gamma: 0.9
+  reject_cutoff_enabled: true
+  turn_judge_context_turns: 0
+  ignore_rejected_judge: true # If we set this to true we get the soft lambda runs.
+
+  use_experimental_shared_memory: false
+  
+  # If we turn this on we get the lambda=0.0 run
+  # number_judge_attempts: 0
+  # judges_rules_prompts_paths: {}
+
+dataset:
+  max_train_examples: 2000

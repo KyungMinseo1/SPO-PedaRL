@@ -1,0 +1,77 @@
+You are tasked with inspecting a conversation between a student and a teacher (tutor). Your goal is to determine whether the teacher properly guided the student to the solution or whether they revealed too much information too early, such as directly giving away the final answer or solving key steps of the problem without involving the student.
+
+The teacher should:
+- NOT reveal the final answer or complete the remaining solution steps directly.
+- Provide feedback on the student's existing work without solving the problem for them.
+- Guide the student through questions, hints, or corrective feedback.
+
+Assess the response based on the following criteria:
+**Does the teacher NOT reveal the answer in this response?**
+**Does the teacher avoid directly solving or working through problem-solving steps themselves?**
+
+## Note:
+- If this turn contains no problem-solving content (e.g., greetings, farewells, motivational exchanges), output OK if the teacher's response is natural and appropriately brief. Output REJECT if it is excessively long or overwhelming even in a non-academic context.
+- A response that briefly acknowledges the student's prior work before asking one question is acceptable — the acknowledgment itself does not count as an additional question or hint.
+- The teacher should pose questions or hints, not execute the reasoning on the student's behalf — even if the final numerical answer is withheld.
+- To receive an **OK**, the teacher's response must satisfy ALL of the following conditions. If ANY condition is violated, you must output **REJECT**.
+
+## Examples of Correct and Incorrect Guidance
+
+### Example 1 – Immediate Disclosure of the Final Answer (Incorrect)
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: The limit is \(\boxed{5}\).
+{
+  "reasoning": "The teacher directly reveals the final answer without prompting the student to recall relevant limit concepts or engage in any reasoning process.",
+  "decision": "REJECT"
+}
+
+### Example 2 – Complete Solution Presented
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: First, rewrite it as 5·(sin(5x)/(5x)). Since sin(x)/x → 1 as x → 0, what will be the answer?.
+{
+  "reasoning": "The teacher not only walked through every reasoning step themselves but also left only the final arithmetic for the student. Withholding the last numerical answer does not constitute meaningful guidance when all key steps have already been executed by the teacher.",
+  "decision": "REJECT"
+}
+
+### Example 3 – Final Answer Withheld (Guided Reasoning)
+- Student: u = x and dv = e^(2x) dx?
+- Teacher: Nice job. Can you find du and v from here?
+{
+  "reasoning": "The teacher avoids stating the final answer and instead leads the student through a reasoning process by asking guiding questions, allowing the student to construct the solution independently.",
+  "decision": "OK"
+
+}
+
+### Example 4 - Key Steps Left to the Student
+- Student: How can I compute the limit as x → 0 of sin(5x)/x?
+- Teacher: Think about how sin(5x)/(5x) behaves as x → 0. Can you rewrite the expression to make use of that?
+{
+  "reasoning": "The teacher pointed to the relevant idea without completing the solution, leaving the core reasoning step to the student.",
+  "decision": "OK"
+}
+
+### Example 5 - Opening Turn Without Prior Student Message
+- Teacher: Before we dive in, what part of this problem feels most confusing to you right now?
+{
+  "reasoning": "Even without a prior student message, the teacher does not reveal the answer or solve any key step. The response is a brief, guiding question that invites student reasoning.",
+  "decision": "OK"
+}
+
+## **Evaluate the following conversation**:
+
+The conversation below shows the last {{n_turns}} turns for context.
+**Evaluate ONLY the final teacher response. Previous turns are provided as context only.**
+
+==BEGIN CONVERSATION==
+{% for message in conversation %}
+- {{ message.role.capitalize() }}: {{ message.content }}
+{% endfor %}
+==END CONVERSATION==
+
+Please output a JSON evaluation following exactly this schema:
+{
+  "reasoning": "your explanation here",
+  "decision": "OK or REJECT"
+}
+
+Now write the JSON evaluation for the conversation above, make sure the JSON is valid:
